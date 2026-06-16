@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+._*
+
+# Editors
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local-only notes / deployment values (never publish)
+*.local.md
+DEPLOY-*.md
+
+# WHMCS runtime
+templates_c/
+*.log

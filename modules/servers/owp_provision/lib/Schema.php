@@ -331,6 +331,7 @@ class Schema
             $t->unsignedInteger('vpn_device_id')->nullable()->comment('其 IPMI 所在 ROS 设备 id（开 VPN 用）');
             $t->string('ipmi_ip', 32)->nullable()->comment('IPMI/BMC 地址');
             $t->string('ipmi_kind', 12)->default('idrac')->comment('idrac|ilo|generic');
+            $t->string('ipmi_user', 32)->nullable()->comment('BMC 管理员账号（建客户子账号用）；密码加密存 srv{id}_ipmi_pass');
             $t->string('line', 64)->nullable()->comment('该服务器可用线路标签（对应 prefix 资源 line，可空=不限）');
             $t->text('specs')->nullable()->comment('规格描述（CPU/内存/盘/网卡）');
             $t->string('status', 12)->default('free')->comment('free|rented|maintenance');

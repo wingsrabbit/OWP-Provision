@@ -127,6 +127,33 @@ class Config
         }
     }
 
+    /** 每服务器敏感项（如 BMC 管理密码）：key=srv{id}_{name}，加密存。 */
+    public static function serverSecret(int $serverId, string $key): string
+    {
+        try {
+            $enc = (string) Capsule::table(Schema::T_CONFIG)
+                ->where('setting', 'srv' . $serverId . '_' . $key)->value('value');
+        } catch (\Throwable $e) {
+            return '';
+        }
+        return $enc !== '' ? self::decrypt($enc) : '';
+    }
+
+    public static function setServerSecret(int $serverId, string $key, string $plain): void
+    {
+        $setting = 'srv' . $serverId . '_' . $key;
+        if ($plain === '') {
+            Capsule::table(Schema::T_CONFIG)->where('setting', $setting)->delete();
+            return;
+        }
+        $enc = self::encrypt($plain);
+        if (Capsule::table(Schema::T_CONFIG)->where('setting', $setting)->exists()) {
+            Capsule::table(Schema::T_CONFIG)->where('setting', $setting)->update(['value' => $enc, 'updated_at' => date('Y-m-d H:i:s')]);
+        } else {
+            Capsule::table(Schema::T_CONFIG)->insert(['setting' => $setting, 'value' => $enc, 'updated_at' => date('Y-m-d H:i:s')]);
+        }
+    }
+
     /** 某设备各敏感项是否已设置（不泄露内容）。 */
     public static function deviceSecretStatus(int $deviceId): array
     {

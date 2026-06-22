@@ -99,6 +99,16 @@ function owp_provision_config()
                 'Default'      => 'xc',
                 'Description'  => '客户下单页能看到/选到的类型（与 enabled 取交集）。',
             ],
+            'mgmtSrcIp' => [
+                'FriendlyName' => 'iDRAC 管理源 IP / Mgmt Src IP',
+                'Type'         => 'text', 'Size' => '24',
+                'Description'  => '开通时 ROS 临时 DNAT 只放行此源（本 WHMCS 主机公网 IP）去配 iDRAC。留空=不自动建 iDRAC 账号。',
+            ],
+            'dnatPortBase' => [
+                'FriendlyName' => 'iDRAC DNAT 端口基数 / DNAT Port Base',
+                'Type'         => 'text', 'Size' => '8', 'Default' => '20000',
+                'Description'  => '临时管理 DNAT 公网端口 = 此基数 + serviceid（避开已用端口段）。',
+            ],
         ],
     ];
 }
@@ -496,6 +506,9 @@ function ipd_admin_server_form(string $modulelink, ?object $s): string
         . '<option value="generic"' . $ikSel('generic') . '>generic</option>'
         . '</select></div>';
     $h .= ipd_field('line', '线路标签 / Line', $v('line'), 'text', '对应 prefix 资源 line；空=不限');
+    $h .= ipd_field('ipmi_user', 'iDRAC 管理账号 / BMC Admin User', $v('ipmi_user'), 'text', '建客户子账号用（如 root）');
+    $ipmiPass = $id > 0 ? htmlspecialchars(Config::serverSecret($id, 'ipmi_pass'), ENT_QUOTES) : '';
+    $h .= ipd_field('ipmi_pass', 'iDRAC 管理密码 / BMC Admin Pass', $ipmiPass, 'password', '加密存；保存即覆盖，清空=清除');
     $h .= '</div>';
     $h .= '<div class="ipd-f" style="margin-top:8px"><label>规格 / Specs</label>'
         . '<textarea name="specs" class="form-control" rows="2" placeholder="CPU/内存/盘/网卡">' . $v('specs') . '</textarea></div>';
@@ -520,6 +533,7 @@ function ipd_admin_server_fields_from_post(): array
         'vpn_device_id' => trim((string) ($_POST['vpn_device_id'] ?? '')),
         'ipmi_ip'       => trim((string) ($_POST['ipmi_ip'] ?? '')),
         'ipmi_kind'     => in_array((string) ($_POST['ipmi_kind'] ?? 'idrac'), ['idrac', 'ilo', 'generic'], true) ? (string) $_POST['ipmi_kind'] : 'idrac',
+        'ipmi_user'     => trim((string) ($_POST['ipmi_user'] ?? '')),
         'line'          => trim((string) ($_POST['line'] ?? '')),
         'specs'         => trim((string) ($_POST['specs'] ?? '')),
     ];
@@ -534,7 +548,9 @@ function ipd_admin_server_add(): int
     if (!Devices::exists($f['device_id'])) {
         throw new \RuntimeException('所选交换机不存在。');
     }
-    return Servers::create($f);
+    $id = Servers::create($f);
+    Config::setServerSecret($id, 'ipmi_pass', (string) ($_POST['ipmi_pass'] ?? '')); // 保存即覆盖
+    return $id;
 }
 
 function ipd_admin_server_save(int $id): void
@@ -547,6 +563,7 @@ function ipd_admin_server_save(int $id): void
         throw new \RuntimeException('名称 / 交换机 / 端口 必填。');
     }
     Servers::update($id, $f);
+    Config::setServerSecret($id, 'ipmi_pass', (string) ($_POST['ipmi_pass'] ?? '')); // 保存即覆盖
 }
 
 function ipd_admin_server_delete(int $id): string
@@ -559,6 +576,7 @@ function ipd_admin_server_delete(int $id): string
         throw new \RuntimeException('该服务器租用中，请先把相关服务销户后再删除。');
     }
     Servers::delete($id);
+    Config::setServerSecret($id, 'ipmi_pass', ''); // 清除其 BMC 管理密码
     return '已删除服务器 #' . $id . '。';
 }
 

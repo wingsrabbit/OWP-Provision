@@ -20,7 +20,7 @@ if (!defined('WHMCS')) {
 class Servers
 {
     private const COLS = [
-        'name', 'device_id', 'port', 'vpn_device_id', 'ipmi_ip', 'ipmi_kind', 'line', 'specs', 'status',
+        'name', 'device_id', 'port', 'vpn_device_id', 'ipmi_ip', 'ipmi_kind', 'ipmi_user', 'line', 'specs', 'status',
     ];
 
     public static function all(): array

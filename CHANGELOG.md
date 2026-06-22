@@ -10,6 +10,7 @@ v2 产品驱动重构进行中（分阶段 PR 合入）。
 ### 新增
 - **CI**：GitHub Actions `lint` 工作流，每次 push/PR 用 PHP 8.3 对全部 `modules/**/*.php` 跑 `php -l` 语法校验（替代本地 lint）。
 - **编排器 + 驱动层（P1）**：`Orchestrator`（全局锁**串行执行** + 按步日志 `oplog`（保留 7 天）+ **失败逐步回滚**）；`Drivers/DriverInterface` + `Drivers/VrpDriver`（把 v1 设备侧逻辑收进 VRP 驱动）。生命周期（开通/暂停/恢复/销户/改套餐/重下/改对端/各管理按钮）全改经编排器 + VrpDriver 执行、每步落 oplog。设备表加 `driver` 列（vrp|ros|drac）为多设备类型铺路。命令与流程不变（真机已验证）。
+- **服务器租赁/托管蓝图（P3）**：新表 `mod_owp_provision_servers`（库存：所在交换机+端口、IPMI、所在 ROS、线路、规格、状态）+ `lib/Servers.php`（CRUD + 原子绑定/释放，防并发双租）+ 后台「服务器库存」CRUD 面板。产品加 ConfigOption `serviceModel`（ip_transit/server）；`server` 时走 `ipd_create_server` 蓝图：**全局锁内** 绑空闲服务器 → 在其固定端口发 IP（复用 XC：vlan/vlanif/qos lr/route）→ 经其 ROS 开 IPMI VPN（`vpn_ip` 分配 + RosDriver::vpnGrant）→ 回写；任一步失败逐步回滚（撤 VPN/拆交换机/回收分配/释放服务器），每步落 oplog。Terminate 连带撤 VPN+管理 DNAT、释放服务器回库存。交付即「网络通 + VPN 可达 IPMI」，OS 客户自装。
 - **RouterOS 驱动 + 多协议 VPN（P2）**：`Drivers/RosDriver`（私钥/密码 SSH + exec-per-command + 报错识别，自带传输不复用 VRP shell）。`vpnGrant/vpnRevoke`：一条 `/ppp secret`(service=any) 覆盖 **L2TP/PPTP/SSTP/OpenVPN** + 可选 **IKEv2**；每客户专属 profile（pin 固定 VPN /32）+ 隔离 filter（仅**公网 NAT** + **自身 IPMI**，其余 forward/input drop）；全部打 `owp-svc{id}` 注释幂等。`dnatOpen/dnatClose`：iDRAC 临时管理通道（锁 WHMCS 源）。设备表加 ROS 站点字段（`ros_lan_if/ros_wan_if/ros_l2tp_local/ros_ikev2_peer` + 加密 `ros_ipsec_psk`），后台设备表单加 driver 选择 + ROS 字段，Test Connection 按 driver 分发。新增 `vpn_ip` 资源类（清单式，/32）+ `Ipam::pickFreeVpnIp`；allocations 加 VPN 列（vpn_device_id/vpn_ip/vpn_target/vpn_user/vpn_pass_enc/vpn_revealed）。VPN 接入将由 P3 服务器租赁蓝图编排调用。
 
 ### 变更

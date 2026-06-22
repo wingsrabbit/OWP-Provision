@@ -2,7 +2,7 @@
 /**
  * IP-Delivery — Resources.php  
  * ----------------------------------------------------------------------------
- * 每条具体资源一行（`mod_ipdelivery_resources`）。占用**不落库**，由 `allocations` 实时算
+ * 每条具体资源一行（`mod_owp_provision_resources`）。占用**不落库**，由 `allocations` 实时算
  * （删掉旧的 meta.exclude 手工排除）。本类负责：
  *   - 列表 / 增 / 改 / 删 / 启停（CRUD；占用中保护）。
  *   - 占用判定 occupant()：标量精确匹配；ptp/prefix 用 CIDR 重叠。
@@ -15,7 +15,7 @@
  * @target WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 use WHMCS\Database\Capsule;
 

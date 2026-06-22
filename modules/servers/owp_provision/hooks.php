@@ -41,8 +41,8 @@ add_hook('ClientAreaPage', 1, function ($vars) {
         // 类型列表只读、非敏感。
         echo json_encode([
             'ok'       => true,
-            'frontend' => \IpDelivery\Types::frontendKeys(),
-            'all'      => \IpDelivery\Types::enabledKeys(),
+            'frontend' => \OwpProvision\Types::frontendKeys(),
+            'all'      => \OwpProvision\Types::enabledKeys(),
         ]);
         exit;
     }
@@ -50,9 +50,9 @@ add_hook('ClientAreaPage', 1, function ($vars) {
     if ($act === 'nodes') {
         // 启用设备列表只读、非敏感（只回 id+name，便于 JS 单设备免选/节点联动）。
         try {
-            \IpDelivery\Schema::ensureTables();
+            \OwpProvision\Schema::ensureTables();
             $nodes = [];
-            foreach (\IpDelivery\Devices::enabled() as $d) {
+            foreach (\OwpProvision\Devices::enabled() as $d) {
                 $nodes[] = ['id' => (int) $d->id, 'name' => (string) $d->name];
             }
             echo json_encode(['ok' => true, 'nodes' => $nodes]);
@@ -68,14 +68,14 @@ add_hook('ClientAreaPage', 1, function ($vars) {
         exit;
     }
     try {
-        \IpDelivery\Schema::ensureTables();
+        \OwpProvision\Schema::ensureTables();
         $deviceId = ipd_hook_device_id((string) ($_GET['device'] ?? ''));
         if ($deviceId <= 0) {
             // 多设备且未指定节点 → 无法确定端口池。
             echo json_encode(['ok' => false, 'error' => 'no_device', 'ports' => []]);
             exit;
         }
-        echo json_encode(['ok' => true, 'device' => $deviceId, 'ports' => \IpDelivery\Ipam::freePorts($deviceId)]);
+        echo json_encode(['ok' => true, 'device' => $deviceId, 'ports' => \OwpProvision\Ipam::freePorts($deviceId)]);
     } catch (\Throwable $e) {
         echo json_encode(['ok' => false, 'error' => 'server_error', 'ports' => []]);
     }
@@ -90,25 +90,25 @@ function ipd_hook_device_id(string $sel): int
 {
     $sel = trim($sel);
     if ($sel === '') {
-        return \IpDelivery\Devices::defaultId(); // 单设备免选
+        return \OwpProvision\Devices::defaultId(); // 单设备免选
     }
     if (ctype_digit($sel)) {
         $id = (int) $sel;
-        return \IpDelivery\Devices::exists($id) ? $id : 0;
+        return \OwpProvision\Devices::exists($id) ? $id : 0;
     }
     if (preg_match('/#(\d+)/', $sel, $m)) { // 友好标签含 id，如「Edge-A #1」
         $id = (int) $m[1];
-        return \IpDelivery\Devices::exists($id) ? $id : 0;
+        return \OwpProvision\Devices::exists($id) ? $id : 0;
     }
     if (preg_match('/^dev(\d+)$/i', $sel, $m)) {
         $id = (int) $m[1];
-        return \IpDelivery\Devices::exists($id) ? $id : 0;
+        return \OwpProvision\Devices::exists($id) ? $id : 0;
     }
     if (preg_match('/^(\d+)\s*[|:]/', $sel, $m)) {
         $id = (int) $m[1];
-        return \IpDelivery\Devices::exists($id) ? $id : 0;
+        return \OwpProvision\Devices::exists($id) ? $id : 0;
     }
-    foreach (\IpDelivery\Devices::enabled() as $d) {
+    foreach (\OwpProvision\Devices::enabled() as $d) {
         if (strcasecmp(trim((string) $d->name), $sel) === 0) {
             return (int) $d->id;
         }

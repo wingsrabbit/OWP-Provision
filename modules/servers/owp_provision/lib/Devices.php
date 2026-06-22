@@ -2,8 +2,8 @@
 /**
  * IP-Delivery — Devices.php  
  * ----------------------------------------------------------------------------
- * 每台接入交换机一条记录（`mod_ipdelivery_devices`，非敏感连接配置）。敏感凭据按设备
- * 加密存 `mod_ipdelivery_config`（见 Config::deviceSecret*，key=dev{id}_*）。
+ * 每台接入交换机一条记录（`mod_owp_provision_devices`，非敏感连接配置）。敏感凭据按设备
+ * 加密存 `mod_owp_provision_config`（见 Config::deviceSecret*，key=dev{id}_*）。
  *
  *   - 列表 / 增 / 改 / 删 / 启停（CRUD）。
  *   - connConfig($id)：把设备行 + 解密凭据组装成 Connection 期望的配置数组（替代旧全局）。
@@ -15,7 +15,7 @@
  * @target WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 use WHMCS\Database\Capsule;
 

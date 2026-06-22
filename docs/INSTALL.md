@@ -12,31 +12,31 @@
 
 ```
 modules/
-  servers/owp_ipdelivery/
-    owp_ipdelivery.php         # server module:开通/暂停/恢复/销户 + 客户区 + Admin 按钮
+  servers/owp_provision/
+    owp_provision.php         # server module:开通/暂停/恢复/销户 + 客户区 + Admin 按钮
     hooks.php                  # 下单交互:freeports/types/nodes AJAX + 购物车 JS(由 addon hooks 桥接加载)
     clientarea.tpl             # GRE 客户区模板(改对端)
     lib/
       Schema.php               # 建表 / 迁移(Capsule,幂等)
-      Config.php               # 全局设置(tbladdonmodules)+ 每设备加密凭据(mod_ipdelivery_config,key=dev{id}_*)
+      Config.php               # 全局设置(tbladdonmodules)+ 每设备加密凭据(mod_owp_provision_config,key=dev{id}_*)
       Devices.php              # 多设备 CRUD + connConfig(id) 组装 + 默认设备判定 + 在用分配校验
       Resources.php            # 清单式 IPAM:逐条资源 CRUD + 实时占用 + 校验 + 母段切分 + 空闲条目查询
       Types.php                # 交付类型注册表(可配置 / 可扩展;enabled / frontend 开关)
       Ipam.php                 # 分配 / 回收(事务 + 行锁;从 Resources 清单挑空闲条目;按 device_id 隔离)
       Templates.php            # 渲染 XC(qos lr)/ GRE(只开通)/ 拆除 / 暂停 的 VRP 命令块
       Connection.php           # SSH 连接层(direct / jump)+ 自带 phpseclib v3(lib/sshv3/)
-  addons/owp_ipdelivery/
-    owp_ipdelivery.php         # addon module:设备(连接 + 凭据) / 清单式资源 / 占用总览 管理页
+  addons/owp_provision/
+    owp_provision.php         # addon module:设备(连接 + 凭据) / 清单式资源 / 占用总览 管理页
     hooks.php                  # 桥接:require server 模块的 hooks.php
 install/schema.sql             # 等效建表 SQL(参考;正常由 addon activate 自动建)
 ```
 
 > **hooks 加载**:WHMCS **不自动加载 server 模块的 `hooks.php`**,但**会自动加载已激活 addon 的 `hooks.php`**。故 `addons/.../hooks.php` 是桥接、`require` server 的 `hooks.php`(真正逻辑)。**改了 hooks 后 deactivate→activate 一次 addon 刷新 hook 缓存。**
 
-- **两模块同名** `owp_ipdelivery`,共用同一套 `mod_ipdelivery_*` 表。
-- **lib 共享**:addon 通过 `require_once dirname(__DIR__,2).'/servers/owp_ipdelivery/lib/...'` 引用 server 模块下的 lib(单一副本,不复制)。因此 **server 模块必须安装**,addon 才能工作。
-- **连接配置 = 多设备**:每台接入交换机一条记录存 `mod_ipdelivery_devices`(非敏感)+ 每设备加密凭据存 `mod_ipdelivery_config`(key=`dev{id}_*`)。在 addon 管理页「设备 / Devices」区增删改(**不在 Configure**)。`MetaData.RequiresServer=false`,**不需要建 WHMCS Server 条目**。
-- **资源 / 分配按设备**:`mod_ipdelivery_resources`(清单式,逐条具体资源)/ `_allocations` 都带 `device_id`;分配从「下单所选节点」对应设备的清单里挑一条空闲条目,连接也连该设备。
+- **两模块同名** `owp_provision`,共用同一套 `mod_owp_provision_*` 表。
+- **lib 共享**:addon 通过 `require_once dirname(__DIR__,2).'/servers/owp_provision/lib/...'` 引用 server 模块下的 lib(单一副本,不复制)。因此 **server 模块必须安装**,addon 才能工作。
+- **连接配置 = 多设备**:每台接入交换机一条记录存 `mod_owp_provision_devices`(非敏感)+ 每设备加密凭据存 `mod_owp_provision_config`(key=`dev{id}_*`)。在 addon 管理页「设备 / Devices」区增删改(**不在 Configure**)。`MetaData.RequiresServer=false`,**不需要建 WHMCS Server 条目**。
+- **资源 / 分配按设备**:`mod_owp_provision_resources`(清单式,逐条具体资源)/ `_allocations` 都带 `device_id`;分配从「下单所选节点」对应设备的清单里挑一条空闲条目,连接也连该设备。
 
 ---
 
@@ -45,8 +45,8 @@ install/schema.sql             # 等效建表 SQL(参考;正常由 addon activat
 把两个模块目录上传到 WHMCS 安装目录(保持路径):
 
 ```
-/path/to/whmcs/modules/servers/owp_ipdelivery/
-/path/to/whmcs/modules/addons/owp_ipdelivery/
+/path/to/whmcs/modules/servers/owp_provision/
+/path/to/whmcs/modules/addons/owp_provision/
 ```
 
 权限:目录 755、文件 644,owner 与站点一致(常见 `www:www`)。改 PHP 后 opcache 最长 60s 生效;要立即生效:**先清** `templates_c/*.php` **再** reload php-fpm。
@@ -58,7 +58,7 @@ install/schema.sql             # 等效建表 SQL(参考;正常由 addon activat
 ## 2. 激活 addon(自动建表)
 
 WHMCS 后台 → **Setup → Addon Modules** → 找到「IP Delivery」→ **Activate**。
-激活调 `lib/Schema.php`,**幂等**建 6 张表:`mod_ipdelivery_devices / _pools / _resources / _allocations / _config / _log`。
+激活调 `lib/Schema.php`,**幂等**建 6 张表:`mod_owp_provision_devices / _pools / _resources / _allocations / _config / _log`。
 
 > 若激活报建表错误:手动跑 `install/schema.sql`(只跑其中的 `CREATE TABLE` 段)。
 
@@ -93,7 +93,7 @@ WHMCS 后台 → **Setup → Addon Modules** → 找到「IP Delivery」→ **Ac
 | 跳板 | Jump Private Key(私钥内容) | — | △ | 直接粘贴 PEM 整段;仅在内存用、不落盘(比路径更推荐) | 🔒 |
 | — | Timeout | ✓ | ✓ | `30` 秒 | |
 
-(✓ 必填　△ 可选 / 视情况　— 该模式不用;🔒 = 加密存 `mod_ipdelivery_config` 的 `dev{id}_*`)
+(✓ 必填　△ 可选 / 视情况　— 该模式不用;🔒 = 加密存 `mod_owp_provision_config` 的 `dev{id}_*`)
 
 保存后展开该设备可:**Test Connection**(写账号 → `display version`,忽略 dry-run 始终真连)/ **启停** / **删除**(**有在用分配会被拒绝**,需先把相关服务销户)。
 
@@ -141,7 +141,7 @@ WHMCS 后台 → **Setup → Addon Modules** → 找到「IP Delivery」→ **Ac
 
 Setup → Products/Services → 新建 Product「**IP Delivery**」:
 - Type = **Other**
-- Module Settings → Module Name = **IP Delivery**(`owp_ipdelivery`)
+- Module Settings → Module Name = **IP Delivery**(`owp_provision`)
 - Auto setup = **收款后自动开通**(On Payment)。
 
 ### 5.2 Configurable Options(客户下单可选,计价)
@@ -211,8 +211,8 @@ addon → Configure(类型注册表见 `lib/Types.php`):
 1. 把所有 IP Delivery 服务先正常 **Terminate**(让设备配置被干净拆除、资源回池)。**别**直接删模块——否则设备残留无人清理。
 2. Setup → Addon Modules → 本模块 → **Deactivate**(`_deactivate` 故意**不删表**,保留占用记录)。
 3. 产品改用其它模块或删产品(确认无在用服务)。
-4. 删文件 `modules/servers/owp_ipdelivery/` 与 `modules/addons/owp_ipdelivery/`。清 `templates_c/*.php` + reload php-fpm。
-5. 如确需清库:手动 `DROP TABLE mod_ipdelivery_log, mod_ipdelivery_allocations, mod_ipdelivery_config, mod_ipdelivery_resources, mod_ipdelivery_pools, mod_ipdelivery_devices;`(**会删占用 / 资源 / 设备 / 凭据,谨慎**)。
+4. 删文件 `modules/servers/owp_provision/` 与 `modules/addons/owp_provision/`。清 `templates_c/*.php` + reload php-fpm。
+5. 如确需清库:手动 `DROP TABLE mod_owp_provision_log, mod_owp_provision_allocations, mod_owp_provision_config, mod_owp_provision_resources, mod_owp_provision_pools, mod_owp_provision_devices;`(**会删占用 / 资源 / 设备 / 凭据,谨慎**)。
 
 **设备残留检查**(卸载 / 异常后人工核查接入交换机):
 ```

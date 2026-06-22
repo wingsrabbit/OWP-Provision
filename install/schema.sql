@@ -4,7 +4,7 @@
 -- 正常安装时由 addon `_activate()`（lib/Schema.php，走 WHMCS Capsule）自动建表，
 -- 无需手动跑此文件。此处提供等效 SQL 便于审计 / 手动初始化 / 排错。
 --
--- 引擎 InnoDB，字符集 utf8mb4。表前缀 mod_ipdelivery_。
+-- 引擎 InnoDB，字符集 utf8mb4。表前缀 mod_owp_provision_。
 -- 与 lib/Schema.php 的列定义保持一致（如有出入以 Schema.php 为准）。
 --
 -- ⚠ 不含任何凭据/密钥；连接配置存在 WHMCS 的 tbladdonmodules（addon 加密字段）。
@@ -15,7 +15,7 @@ SET NAMES utf8mb4;
 -- ---------------------------------------------------------------------------
 -- 0) 设备（每台接入交换机一条；非敏感连接配置。敏感凭据加密存 _config 的 dev{id}_*）
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `mod_ipdelivery_devices` (
+CREATE TABLE IF NOT EXISTS `mod_owp_provision_devices` (
   `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `name`          VARCHAR(64)  NOT NULL COMMENT '设备显示名，如 Edge-A',
   `enabled`       TINYINT      NOT NULL DEFAULT 1,
@@ -38,9 +38,9 @@ CREATE TABLE IF NOT EXISTS `mod_ipdelivery_devices` (
 -- ---------------------------------------------------------------------------
 -- 1) 资源池（母段式；**弃用**，仅作迁移源/回滚保留。新逻辑用 _resources）
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `mod_ipdelivery_pools` (
+CREATE TABLE IF NOT EXISTS `mod_owp_provision_pools` (
   `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `device_id`  INT UNSIGNED NOT NULL DEFAULT 1 COMMENT '所属设备 mod_ipdelivery_devices.id',
+  `device_id`  INT UNSIGNED NOT NULL DEFAULT 1 COMMENT '所属设备 mod_owp_provision_devices.id',
   `kind`       VARCHAR(16)  NOT NULL COMMENT 'vlan|ptp|prefix|port|loopback|tunnel|acl',
   `value`      VARCHAR(255) NOT NULL COMMENT '池定义（母段/范围）',
   `meta`       TEXT         NULL     COMMENT 'JSON：掩码/允许范围/exclude/备注（已弃用）',
@@ -55,9 +55,9 @@ CREATE TABLE IF NOT EXISTS `mod_ipdelivery_pools` (
 -- ---------------------------------------------------------------------------
 -- 1b) 资源清单（清单式 IPAM：每条具体资源一行；占用不落库，由 _allocations 实时算）
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `mod_ipdelivery_resources` (
+CREATE TABLE IF NOT EXISTS `mod_owp_provision_resources` (
   `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `device_id`  INT UNSIGNED NOT NULL DEFAULT 1 COMMENT '所属设备 mod_ipdelivery_devices.id',
+  `device_id`  INT UNSIGNED NOT NULL DEFAULT 1 COMMENT '所属设备 mod_owp_provision_devices.id',
   `kind`       VARCHAR(16)  NOT NULL COMMENT 'vlan|ptp|prefix|port|loopback|tunnel|acl',
   `value`      VARCHAR(64)  NOT NULL COMMENT '整数/网络地址/IP/端口名',
   `mask`       INT UNSIGNED NULL     COMMENT 'ptp/prefix/loopback 前缀长度；其余 NULL',
@@ -74,10 +74,10 @@ CREATE TABLE IF NOT EXISTS `mod_ipdelivery_resources` (
 -- ---------------------------------------------------------------------------
 -- 2) 已分配明细（serviceid 唯一）
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `mod_ipdelivery_allocations` (
+CREATE TABLE IF NOT EXISTS `mod_owp_provision_allocations` (
   `id`                INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `serviceid`         INT UNSIGNED NOT NULL COMMENT 'tblhosting.id',
-  `device_id`         INT UNSIGNED NOT NULL DEFAULT 1 COMMENT '所属设备 mod_ipdelivery_devices.id',
+  `device_id`         INT UNSIGNED NOT NULL DEFAULT 1 COMMENT '所属设备 mod_owp_provision_devices.id',
   `delivery_type`     VARCHAR(8)   NOT NULL COMMENT 'xc|gre',
   `vlan_id`           INT UNSIGNED NULL     COMMENT 'XC 用',
   `ptp_net`           VARCHAR(32)  NULL     COMMENT 'PTP /30',
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS `mod_ipdelivery_allocations` (
 -- ---------------------------------------------------------------------------
 -- 3) 连接配置（可选；默认连接配置走 tbladdonmodules，此表留作覆盖/迁移备选）
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `mod_ipdelivery_config` (
+CREATE TABLE IF NOT EXISTS `mod_owp_provision_config` (
   `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `setting`    VARCHAR(64)  NOT NULL,
   `value`      TEXT         NULL,
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS `mod_ipdelivery_config` (
 -- ---------------------------------------------------------------------------
 -- 4) 下发审计日志（可选；logModuleCall 之外的结构化留痕）
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `mod_ipdelivery_log` (
+CREATE TABLE IF NOT EXISTS `mod_owp_provision_log` (
   `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `serviceid`     INT UNSIGNED NULL,
   `action`        VARCHAR(32)  NOT NULL,
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS `mod_ipdelivery_log` (
 -- ============================================================================
 -- 可选：初始化资源池（按你的真实可交付聚合/端口调整后再执行）
 -- ============================================================================
--- INSERT INTO `mod_ipdelivery_pools` (`kind`,`value`,`meta`,`enabled`,`created_at`,`updated_at`) VALUES
+-- INSERT INTO `mod_owp_provision_pools` (`kind`,`value`,`meta`,`enabled`,`created_at`,`updated_at`) VALUES
 --   ('vlan',     '1000-1100',                          NULL,                                   1, NOW(), NOW()),
 --   ('ptp',      '100.64.0.0/24',                    '{"split":30}',                          1, NOW(), NOW()),
 --   ('prefix',   '203.0.113.0/24',                     '{"deliver_min":28,"deliver_max":32}',   1, NOW(), NOW()),
@@ -142,9 +142,9 @@ CREATE TABLE IF NOT EXISTS `mod_ipdelivery_log` (
 -- ============================================================================
 -- 卸载（谨慎！会删占用记录）
 -- ============================================================================
--- DROP TABLE IF EXISTS `mod_ipdelivery_log`;
--- DROP TABLE IF EXISTS `mod_ipdelivery_allocations`;
--- DROP TABLE IF EXISTS `mod_ipdelivery_config`;
--- DROP TABLE IF EXISTS `mod_ipdelivery_resources`;
--- DROP TABLE IF EXISTS `mod_ipdelivery_pools`;
--- DROP TABLE IF EXISTS `mod_ipdelivery_devices`;
+-- DROP TABLE IF EXISTS `mod_owp_provision_log`;
+-- DROP TABLE IF EXISTS `mod_owp_provision_allocations`;
+-- DROP TABLE IF EXISTS `mod_owp_provision_config`;
+-- DROP TABLE IF EXISTS `mod_owp_provision_resources`;
+-- DROP TABLE IF EXISTS `mod_owp_provision_pools`;
+-- DROP TABLE IF EXISTS `mod_owp_provision_devices`;

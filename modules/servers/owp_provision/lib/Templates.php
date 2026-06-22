@@ -21,11 +21,11 @@
  *
  * 所有方法返回「命令行数组」（每元素一行，不含尾换行）；Connection::buildBlock() 拼成块。
  *
- * @package IpDelivery
+ * @package OwpProvision
  * @target  WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 if (!defined('WHMCS')) {
     die('Access Denied');

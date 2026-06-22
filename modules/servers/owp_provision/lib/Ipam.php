@@ -6,7 +6,7 @@
  * tunnel-id。全部在 DB 事务 + 行锁（lockForUpdate）内完成，避免并发撞号。
  *
  * 设计要点：
- *  - 池定义存在 mod_ipdelivery_pools；已分配存在 mod_ipdelivery_allocations。
+ *  - 池定义存在 mod_owp_provision_pools；已分配存在 mod_owp_provision_allocations。
  *  - 「在用」判定 = allocations 表（未 terminated）的占用 ∪ 硬编码保留（HW_RESERVED_*）。
  *    保留项是只读常量，不是「密钥」。
  *  - 一个 serviceid 一条 allocation 记录（unique）。重复开通 → 复用已有记录（幂等）。
@@ -15,11 +15,11 @@
  *
  * 不确定 $params/池值格式时：先 logModuleCall + var_export 落一遍真实结构再取值。
  *
- * @package IpDelivery
+ * @package OwpProvision
  * @target  WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 use WHMCS\Database\Capsule;
 

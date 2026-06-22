@@ -6,9 +6,9 @@
  *   1) 全局非敏感设置（enabledTypes / frontendTypes / globalDryRun 等）：addon `_config`
  *      → `tbladdonmodules`（明文，按明文读）。
  *   2) **每设备**敏感凭据（写/读密码、跳板密码、私钥口令、私钥内容）：`EncryptPassword`
- *      加密存 `mod_ipdelivery_config`，key 带设备前缀 `dev{id}_{name}`（每设备独立凭据）。
+ *      加密存 `mod_owp_provision_config`，key 带设备前缀 `dev{id}_{name}`（每设备独立凭据）。
  *
- * 连接配置从「addon 全局单设备」改为「`mod_ipdelivery_devices` 多设备」（见 Devices）；
+ * 连接配置从「addon 全局单设备」改为「`mod_owp_provision_devices` 多设备」（见 Devices）；
  * 本类只保留全局设置读取 + 每设备凭据加解密。旧的全局 writePass 等已由 Schema 迁移成 dev1_。
  *
  * 全部走 Capsule + localAPI，不硬编码任何凭据。
@@ -16,7 +16,7 @@
  * @target WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 use WHMCS\Database\Capsule;
 
@@ -26,9 +26,9 @@ if (!defined('WHMCS')) {
 
 class Config
 {
-    public const ADDON_MODULE = 'owp_ipdelivery';
+    public const ADDON_MODULE = 'owp_provision';
 
-    /** 每设备敏感凭据键（加密存 mod_ipdelivery_config 的 dev{id}_{key}）。 */
+    /** 每设备敏感凭据键（加密存 mod_owp_provision_config 的 dev{id}_{key}）。 */
     public const SECRET_KEYS = ['writePass', 'readPass', 'jumpPass', 'jumpKeyPassphrase', 'jumpKeyText'];
 
     /** @var array<string,string>|null 全局设置进程内缓存 */
@@ -81,7 +81,7 @@ class Config
     }
 
     // ----------------------------------------------------------------------
-    // 每设备敏感凭据（mod_ipdelivery_config，key = dev{id}_{name}，加密）
+    // 每设备敏感凭据（mod_owp_provision_config，key = dev{id}_{name}，加密）
     // ----------------------------------------------------------------------
 
     private static function devKey(int $deviceId, string $key): string

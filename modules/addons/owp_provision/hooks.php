@@ -14,7 +14,7 @@ if (!defined('WHMCS')) {
     die('Access Denied');
 }
 
-$ipdServerHooks = __DIR__ . '/../../servers/owp_ipdelivery/hooks.php';
+$ipdServerHooks = __DIR__ . '/../../servers/owp_provision/hooks.php';
 if (is_file($ipdServerHooks)) {
     require_once $ipdServerHooks;
 }

@@ -1,7 +1,7 @@
 {*
     IP-Delivery — Client Area template (GRE 改对端)
     -------------------------------------------------------------------------
-    由 owp_ipdelivery_ClientArea() 渲染。变量见该函数 $vars。
+    由 owp_provision_ClientArea() 渲染。变量见该函数 $vars。
     仅 GRE 服务显示「改对端」表单；XC 只读展示。
     提交回 clientarea.php?action=productdetails&id={serviceid}，POST ipd_action=change_remote。
     {$ipd_token} 是本模块的 CSRF nonce，必须带上。

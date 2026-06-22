@@ -27,7 +27,7 @@ class Devices
 {
     /** devices 表可写的非敏感列（白名单，防止越权写入）。 */
     private const COLS = [
-        'name', 'enabled', 'conn_mode', 'device_host', 'device_port',
+        'name', 'driver', 'enabled', 'conn_mode', 'device_host', 'device_port',
         'write_user', 'read_user', 'kex',
         'jump_host', 'jump_port', 'jump_user', 'jump_key_path', 'timeout',
     ];
@@ -147,7 +147,7 @@ class Devices
     }
 
     /**
-     * 组装某设备的连接配置（供 Connection / ipd_connection）：设备行映射到 Connection 期望键
+     * 组装某设备的连接配置（供 Connection / 各 Driver）：设备行映射到 Connection 期望键
      * + 解密的 dev{id}_ 凭据。设备不存在 → 空数组（调用方报错）。
      */
     public static function connConfig(int $id): array

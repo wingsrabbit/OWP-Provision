@@ -33,6 +33,7 @@ class Schema
     public const T_CONFIG      = 'mod_owp_provision_config';
     public const T_LOG         = 'mod_owp_provision_log';
     public const T_DEVICES     = 'mod_owp_provision_devices';
+    public const T_OPLOG       = 'mod_owp_provision_oplog';       // v2 编排器按步日志（保留 7 天）
 
     /**
      * 幂等建全部表。返回简单结果数组，便于 addon `_activate()` 直接转成 WHMCS 期望格式。
@@ -48,10 +49,11 @@ class Schema
             self::createAllocations();
             self::createConfig();
             self::createLog();
+            self::createOplog();
 
             return [
                 'status'      => 'success',
-                'description' => 'IP-Delivery：6 张表已就绪（devices/pools/resources/allocations/config/log）。',
+                'description' => 'OWP Provision：7 张表已就绪（devices/pools/resources/allocations/config/log/oplog）。',
             ];
         } catch (\Throwable $e) {
             return [
@@ -72,6 +74,7 @@ class Schema
         self::createAllocations();
         self::createConfig();
         self::createLog();
+        self::createOplog();
         self::autoSeedResources(); // 安全网：升级后即使 _upgrade 未触发，也保证 resources 已从 pools 播种一次
     }
 
@@ -268,6 +271,29 @@ class Schema
             $t->longText('device_output')->nullable()->comment('设备回显（去密钥）');
             $t->string('result', 16)->default('')->comment('success|error|dryrun');
             $t->timestamp('created_at')->nullable();
+            $t->engine = 'InnoDB';
+        });
+    }
+
+    /**
+     * v2 编排器「按步日志」专表：一单一步一行（phase=create/terminate/...；status=ok/failed/...）。
+     * 供后台「开通队列 + 步骤时间线」展示「卡在哪一步」；保留 7 天（Orchestrator::purgeOplog）。
+     */
+    public static function createOplog(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_OPLOG)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_OPLOG, function ($t) {
+            $t->increments('id');
+            $t->unsignedInteger('serviceid')->nullable()->index();
+            $t->unsignedInteger('device_id')->nullable()->comment('涉及的设备（无则 NULL）');
+            $t->string('phase', 24)->default('')->comment('create|terminate|suspend|unsuspend|change|test');
+            $t->string('step', 64)->comment('步骤名，如 allocate / vrp.provision / ros.vpn');
+            $t->string('status', 12)->default('')->comment('ok|failed|skipped|rollback|rollback_failed|dryrun');
+            $t->text('request')->nullable()->comment('该步请求/命令摘要');
+            $t->longText('response')->nullable()->comment('该步回显/错误');
+            $t->timestamp('created_at')->nullable()->index();
             $t->engine = 'InnoDB';
         });
     }
@@ -512,7 +538,7 @@ class Schema
      */
     public static function dropAll(): void
     {
-        foreach ([self::T_LOG, self::T_ALLOCATIONS, self::T_CONFIG, self::T_RESOURCES, self::T_POOLS, self::T_DEVICES] as $tbl) {
+        foreach ([self::T_OPLOG, self::T_LOG, self::T_ALLOCATIONS, self::T_CONFIG, self::T_RESOURCES, self::T_POOLS, self::T_DEVICES] as $tbl) {
             if (Capsule::schema()->hasTable($tbl)) {
                 Capsule::schema()->drop($tbl);
             }

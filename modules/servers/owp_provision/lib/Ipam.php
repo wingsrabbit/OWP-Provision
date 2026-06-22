@@ -358,6 +358,18 @@ class Ipam
     }
 
     /**
+     * VPN 客户地址：从 ROS 设备的 vpn_ip 清单挑一条空闲（返回裸 IP /32）。占用按 allocations.vpn_ip 算。
+     * @throws \RuntimeException
+     */
+    public static function pickFreeVpnIp(int $rosDeviceId): string
+    {
+        foreach (Resources::freeItems($rosDeviceId, 'vpn_ip') as $r) {
+            return (string) $r->value;
+        }
+        throw new \RuntimeException('无空闲 VPN 客户地址。请在该 ROS 设备的资源页添加 vpn_ip 条目（如 10.0.1.0/24 切 /32）。');
+    }
+
+    /**
      * tunnel-id：优先从清单挑空闲；该设备无 tunnel 清单条目时回退默认区间（占用从 allocations 算）。
      * @throws \RuntimeException
      */

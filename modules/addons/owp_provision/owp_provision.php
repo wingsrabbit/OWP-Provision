@@ -43,6 +43,9 @@ require_once $ipdLibDir . '/Ipam.php';
 require_once $ipdLibDir . '/Resources.php';
 require_once $ipdLibDir . '/Templates.php';
 require_once $ipdLibDir . '/Connection.php';
+require_once $ipdLibDir . '/Drivers/DriverInterface.php';
+require_once $ipdLibDir . '/Drivers/VrpDriver.php';
+require_once $ipdLibDir . '/Drivers/RosDriver.php';
 
 /** 资源池类型（kind）→ 友好名 + value 输入提示。顺序即页面展示顺序。 */
 function ipd_admin_pool_kinds(): array
@@ -55,6 +58,7 @@ function ipd_admin_pool_kinds(): array
         'port'     => ['物理端口 Port', '逗号分隔端口名，如 GE1/0/1,GE1/0/2'],
         'loopback' => ['Loopback /32 母段', 'CIDR 母段，按 /32 切，如 198.51.100.0/28'],
         'acl'      => ['高级 ACL 号', '整数范围（GRE 限速用），如 3000-3999'],
+        'vpn_ip'   => ['VPN 客户地址 /32', 'RouterOS 给客户 pin 的 VPN 地址；母段按 /32 切，如 10.0.1.0/24'],
     ];
 }
 
@@ -294,6 +298,10 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
         $cur = (string) ($d->conn_mode ?? 'jump');
         return $cur === $opt ? ' selected' : '';
     };
+    $driverSel = static function (string $opt) use ($d): string {
+        $cur = (string) ($d->driver ?? 'vrp');
+        return $cur === $opt ? ' selected' : '';
+    };
     $enabledChecked = ($isNew || (int) ($d->enabled ?? 1) === 1) ? ' checked' : '';
 
     $url = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=' . $act;
@@ -307,6 +315,10 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
     $h .= '<div class="ipd-grid">';
     // 非敏感（明文 text）
     $h .= ipd_field('name', '名称 / Name', $v('name'), 'text', '如 Edge-A');
+    $h .= '<div class="ipd-f"><label>设备类型 / Driver</label><select name="driver" class="form-control">'
+        . '<option value="vrp"' . $driverSel('vrp') . '>vrp（华为 VRP 交换机）</option>'
+        . '<option value="ros"' . $driverSel('ros') . '>ros（MikroTik RouterOS / VPN）</option>'
+        . '</select></div>';
     $h .= '<div class="ipd-f"><label>启用 / Enabled</label><div><label class="ipd-chk"><input type="checkbox" name="enabled" value="1"' . $enabledChecked . '> 启用</label></div></div>';
     $h .= '<div class="ipd-f"><label>连接方式 / Mode</label><select name="conn_mode" class="form-control">'
         . '<option value="jump"' . $modeSel('jump') . '>jump（经跳板）</option>'
@@ -333,7 +345,17 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
     $keyText = $id > 0 ? htmlspecialchars(Config::deviceSecret($id, 'jumpKeyText'), ENT_QUOTES) : '';
     $h .= '<div class="ipd-f" style="margin-top:8px"><label>跳板私钥内容 / Jump Private Key (jump)</label>'
         . '<textarea name="jumpKeyText" class="form-control" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----" style="font-family:monospace;font-size:12px">' . $keyText . '</textarea>'
-        . '<small style="color:#888">连接时仅在内存使用、不落盘。保存即覆盖；清空=清除。</small></div>';
+        . '<small style="color:#888">连接时仅在内存使用、不落盘。保存即覆盖；清空=清除。RouterOS(ros) 用同一把私钥登录也填这里。</small></div>';
+
+    // ROS（driver=ros）站点字段：仅 RouterOS 设备用；白标。
+    $h .= '<div style="margin-top:8px;color:#31708f;font-size:12px">RouterOS（driver=ros）站点字段：</div>';
+    $h .= '<div class="ipd-grid">';
+    $h .= ipd_field('ros_lan_if', 'ROS 内网接口 / LAN if', $v('ros_lan_if'), 'text', 'IPMI 侧接口名，如 lan-edge');
+    $h .= ipd_field('ros_wan_if', 'ROS 公网接口 / WAN if', $v('ros_wan_if'), 'text', '如 wan-uplink');
+    $h .= ipd_field('ros_l2tp_local', 'VPN 本端地址', $v('ros_l2tp_local'), 'text', '如 10.0.0.254');
+    $h .= ipd_field('ros_ikev2_peer', 'IKEv2 peer 名(可选)', $v('ros_ikev2_peer'), 'text', '全局 IKEv2 peer；空=不开 IKEv2');
+    $h .= ipd_field('ros_ipsec_psk', 'IPsec PSK', $sec('ros_ipsec_psk'), 'password', 'L2TP/IPsec 共享密钥（加密存）');
+    $h .= '</div>';
 
     $h .= '<div style="margin-top:10px"><button class="btn btn-primary" type="submit">'
         . ($isNew ? '新增设备 / Create Device' : '保存设备 / Save Device') . '</button></div>';
@@ -596,6 +618,7 @@ function ipd_admin_device_fields_from_post(): array
 {
     return [
         'name'          => trim((string) ($_POST['name'] ?? '')),
+        'driver'        => (string) ($_POST['driver'] ?? 'vrp') === 'ros' ? 'ros' : 'vrp',
         'enabled'       => !empty($_POST['enabled']) ? 1 : 0,
         'conn_mode'     => (string) ($_POST['conn_mode'] ?? 'jump') === 'direct' ? 'direct' : 'jump',
         'device_host'   => trim((string) ($_POST['device_host'] ?? '')),
@@ -608,10 +631,14 @@ function ipd_admin_device_fields_from_post(): array
         'jump_user'     => trim((string) ($_POST['jump_user'] ?? 'root')),
         'jump_key_path' => trim((string) ($_POST['jump_key_path'] ?? '')),
         'timeout'       => trim((string) ($_POST['timeout'] ?? '30')),
+        'ros_lan_if'    => trim((string) ($_POST['ros_lan_if'] ?? '')),
+        'ros_wan_if'    => trim((string) ($_POST['ros_wan_if'] ?? '')),
+        'ros_l2tp_local' => trim((string) ($_POST['ros_l2tp_local'] ?? '')),
+        'ros_ikev2_peer' => trim((string) ($_POST['ros_ikev2_peer'] ?? '')),
     ];
 }
 
-/** 保存该设备的全部敏感凭据（保存即覆盖：提交什么存什么，空=清除）。 */
+/** 保存该设备的全部敏感凭据（保存即覆盖：提交什么存什么，空=清除）。含 ROS 的 IPsec PSK。 */
 function ipd_admin_device_secrets_from_post(int $deviceId): void
 {
     foreach (Config::SECRET_KEYS as $sk) {
@@ -622,6 +649,8 @@ function ipd_admin_device_secrets_from_post(int $deviceId): void
         }
         Config::setDeviceSecret($deviceId, $sk, $val); // 空串 → 删除该项
     }
+    // ROS IPsec PSK（仅 ros 设备用；同样「保存即覆盖」）
+    Config::setDeviceSecret($deviceId, 'ros_ipsec_psk', (string) ($_POST['ros_ipsec_psk'] ?? ''));
 }
 
 function ipd_admin_device_add(): int
@@ -661,17 +690,24 @@ function ipd_admin_device_delete(int $id): string
     return '已删除设备 #' . $id . '（其加密凭据、资源清单一并清除）。';
 }
 
-/** 单设备 Test Connection（写账号 display version；忽略全局 dry-run，否则测不出来）。 */
+/** 单设备 Test Connection（按 driver 分发：vrp=写账号 display version / ros=/system version；忽略全局 dry-run）。 */
 function ipd_admin_device_test(int $id): array
 {
-    if ($id <= 0 || !Devices::exists($id)) {
+    $dev = Devices::get($id);
+    if (!$dev) {
         return [false, '设备不存在。'];
     }
-    $cfg  = Devices::connConfig($id);
-    $conn = new Connection($cfg, false);
-    $res  = $conn->testConnection(true);
-    logModuleCall('owp_provision', 'AddonDeviceTest', ['device_id' => $id, 'host' => $cfg['deviceHost'] ?? ''], $res['output'], $res['error']);
-    return [$res['ok'], $res['ok'] ? mb_substr(trim($res['output']), 0, 200) : $res['error']];
+    try {
+        $driver = strtolower((string) ($dev->driver ?? 'vrp'));
+        $drv = $driver === 'ros'
+            ? new \OwpProvision\Drivers\RosDriver($id, false)
+            : new \OwpProvision\Drivers\VrpDriver($id, false);
+        $res = $drv->testConnection();
+    } catch (\Throwable $e) {
+        return [false, $e->getMessage()];
+    }
+    logModuleCall('owp_provision', 'AddonDeviceTest', ['device_id' => $id, 'driver' => $dev->driver ?? 'vrp'], $res['output'] ?? '', $res['error'] ?? '');
+    return [(bool) ($res['ok'] ?? false), ($res['ok'] ?? false) ? mb_substr(trim((string) ($res['output'] ?? '')), 0, 200) : (string) ($res['error'] ?? '')];
 }
 
 // ============================================================================

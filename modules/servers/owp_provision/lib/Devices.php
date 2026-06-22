@@ -30,6 +30,7 @@ class Devices
         'name', 'driver', 'enabled', 'conn_mode', 'device_host', 'device_port',
         'write_user', 'read_user', 'kex',
         'jump_host', 'jump_port', 'jump_user', 'jump_key_path', 'timeout',
+        'ros_lan_if', 'ros_wan_if', 'ros_l2tp_local', 'ros_ikev2_peer',
     ];
 
     /** @return array<int,object> 全部设备（按 id） */

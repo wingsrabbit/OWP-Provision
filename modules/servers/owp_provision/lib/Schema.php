@@ -199,6 +199,13 @@ class Schema
             $t->string('policy_name', 64)->nullable()->comment('traffic-policy 名，tp-{serviceid}');
             $t->string('status', 16)->default('active')->comment('active|suspended|terminated');
             $t->timestamp('remote_changed_at')->nullable()->comment('GRE 改对端限频用');
+            // v2 VPN（RouterOS）：每服务的 VPN 接入（IPMI 等）。vpn_device_id 可与交付设备不同（ROS 单独一台）。
+            $t->unsignedInteger('vpn_device_id')->nullable()->comment('VPN 所在 ROS 设备 id');
+            $t->string('vpn_ip', 32)->nullable()->comment('分给客户的 VPN 固定地址（/32）');
+            $t->string('vpn_target', 64)->nullable()->comment('该 VPN 可达的目标（如其 IPMI IP）');
+            $t->string('vpn_user', 64)->nullable()->comment('VPN 账号名');
+            $t->text('vpn_pass_enc')->nullable()->comment('VPN 密码（EncryptPassword 加密）');
+            $t->tinyInteger('vpn_revealed')->default(0)->comment('VPN 凭据是否已被客户查看过（一次性）');
             $t->timestamp('created_at')->nullable();
             $t->timestamp('updated_at')->nullable();
             $t->unique('serviceid');
@@ -232,6 +239,11 @@ class Schema
             $t->string('jump_user', 32)->nullable();
             $t->string('jump_key_path', 255)->nullable();
             $t->string('timeout', 6)->default('30');
+            // ROS（driver=ros）站点字段：白标，后台填。IPsec PSK 走加密 deviceSecret('ros_ipsec_psk')。
+            $t->string('ros_lan_if', 32)->nullable()->comment('ROS 内网(IPMI侧)接口名，如 lan-edge');
+            $t->string('ros_wan_if', 32)->nullable()->comment('ROS 公网接口名，如 wan-uplink');
+            $t->string('ros_l2tp_local', 32)->nullable()->comment('VPN 本端地址，如 10.0.0.254');
+            $t->string('ros_ikev2_peer', 64)->nullable()->comment('全局 IKEv2 peer 名（一次性预置）；空=不开 IKEv2');
             $t->timestamp('created_at')->nullable();
             $t->timestamp('updated_at')->nullable();
             $t->engine = 'InnoDB';

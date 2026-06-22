@@ -39,6 +39,7 @@ use OwpProvision\Types;
 use OwpProvision\Orchestrator;
 use OwpProvision\Drivers\VrpDriver;
 use OwpProvision\Drivers\RosDriver;
+use OwpProvision\Drivers\DracDriver;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -58,6 +59,7 @@ require_once __DIR__ . '/lib/Orchestrator.php';
 require_once __DIR__ . '/lib/Drivers/DriverInterface.php';
 require_once __DIR__ . '/lib/Drivers/VrpDriver.php';
 require_once __DIR__ . '/lib/Drivers/RosDriver.php';
+require_once __DIR__ . '/lib/Drivers/DracDriver.php';
 
 // ============================================================================
 // MetaData / ConfigOptions
@@ -386,8 +388,31 @@ function owp_provision_TerminateAccount(array $params)
                 return 'Error: 拆除后仍检测到残留，请人工核查（资源暂不回池）：' . $verify['error'];
             }
 
-            // 服务器形态：撤 IPMI VPN（ROS）+ 释放服务器库存
+            // 服务器形态：删 iDRAC 客户号 → 撤 IPMI VPN（ROS）→ 释放服务器库存
             $rosId = (int) ($alloc['vpn_device_id'] ?? 0);
+            $srv   = Servers::byService($serviceId);
+            // iDRAC 删客户子账号（经临时 DNAT；非致命）
+            if ($rosId > 0 && $srv && (string) ($srv->ipmi_kind ?? '') === 'idrac' && !empty($srv->ipmi_ip)) {
+                $iu   = trim((string) ($srv->ipmi_user ?? ''));
+                $ip   = Config::serverSecret((int) $srv->id, 'ipmi_pass');
+                $msrc = Config::get('mgmtSrcIp', '');
+                $vu   = trim((string) ($alloc['vpn_user'] ?? ''));
+                if ($iu !== '' && $ip !== '' && $msrc !== '' && $vu !== '') {
+                    $rosDev  = Devices::get($rosId);
+                    $rosHost = $rosDev ? (string) $rosDev->device_host : '';
+                    $pubPort = (int) Config::get('dnatPortBase', '20000') + $serviceId;
+                    $ros2    = ipd_ros($params, $rosId);
+                    try {
+                        $ros2->dnatOpen($serviceId, (string) $srv->ipmi_ip, 443, $msrc, $pubPort);
+                        (new DracDriver('https://' . $rosHost . ':' . $pubPort, $iu, $ip, Config::isDryRun($params)))->deleteUser($vu);
+                        Orchestrator::log($serviceId, 'terminate', 'drac.user_delete', $rosId, 'ok', '', $vu);
+                    } catch (\Throwable $e) {
+                        Orchestrator::log($serviceId, 'terminate', 'drac.user_delete', $rosId, 'failed', '', $e->getMessage());
+                    } finally {
+                        try { $ros2->dnatClose($serviceId); } catch (\Throwable $e) {}
+                    }
+                }
+            }
             if ($rosId > 0) {
                 try {
                     $ros = ipd_ros($params, $rosId);
@@ -580,6 +605,31 @@ function ipd_create_server(array $params)
                 }
             } else {
                 Orchestrator::log($serviceId, 'create_server', 'ros.vpn', null, 'skipped', '', '未配置 ROS/IPMI 或无服务凭据，跳过 VPN');
+            }
+
+            // 4b) iDRAC：经 ROS 临时 DNAT 建最小权限客户子账号（非致命：失败仅告警，网络+VPN 已成；通道用后即撤）
+            $mgmtSrc  = Config::get('mgmtSrcIp', '');
+            $portBase = (int) Config::get('dnatPortBase', '20000');
+            $ipmiUser = trim((string) ($srv->ipmi_user ?? ''));
+            $ipmiPass = isset($srv->id) ? Config::serverSecret((int) $srv->id, 'ipmi_pass') : '';
+            if ($rosId > 0 && (string) ($srv->ipmi_kind ?? '') === 'idrac'
+                && !empty($srv->ipmi_ip) && $ipmiUser !== '' && $ipmiPass !== '' && $mgmtSrc !== '' && $vpnUser !== '') {
+                $rosDev  = Devices::get($rosId);
+                $rosHost = $rosDev ? (string) $rosDev->device_host : '';
+                $pubPort = $portBase + $serviceId;
+                $ros     = ipd_ros($params, $rosId);
+                try {
+                    $ros->dnatOpen($serviceId, (string) $srv->ipmi_ip, 443, $mgmtSrc, $pubPort);
+                    $drac = new DracDriver('https://' . $rosHost . ':' . $pubPort, $ipmiUser, $ipmiPass, Config::isDryRun($params));
+                    $du   = $drac->createUser($vpnUser, $vpnPass, 'Operator');
+                    Orchestrator::log($serviceId, 'create_server', 'drac.user', $rosId,
+                        !empty($du['ok']) ? (!empty($du['dryRun']) ? 'dryrun' : 'ok') : 'failed', '',
+                        !empty($du['ok']) ? ('slot ' . ($du['slot'] ?? '')) : (string) ($du['error'] ?? ''));
+                } catch (\Throwable $e) {
+                    Orchestrator::log($serviceId, 'create_server', 'drac.user', $rosId, 'failed', '', $e->getMessage());
+                } finally {
+                    try { $ros->dnatClose($serviceId); } catch (\Throwable $e) {}
+                }
             }
 
             // 5) 回写 + 活动日志

@@ -37,6 +37,7 @@ use OwpProvision\Connection;
 use OwpProvision\Types;
 use OwpProvision\Orchestrator;
 use OwpProvision\Drivers\VrpDriver;
+use OwpProvision\Drivers\RosDriver;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -54,6 +55,7 @@ require_once __DIR__ . '/lib/Connection.php';
 require_once __DIR__ . '/lib/Orchestrator.php';
 require_once __DIR__ . '/lib/Drivers/DriverInterface.php';
 require_once __DIR__ . '/lib/Drivers/VrpDriver.php';
+require_once __DIR__ . '/lib/Drivers/RosDriver.php';
 
 // ============================================================================
 // MetaData / ConfigOptions
@@ -734,6 +736,24 @@ function owp_provision_VerifyDelivery(array $params)
 function ipd_vrp(array $params, int $deviceId): VrpDriver
 {
     return new VrpDriver($deviceId, Config::isDryRun($params));
+}
+
+/**
+ * 设备驱动工厂：按设备 `driver` 字段返回对应驱动（vrp=华为交换机 / ros=RouterOS）。
+ * 用于按设备类型分发（Test Connection、P3 服务器租赁蓝图编排）。
+ * @return \OwpProvision\Drivers\DriverInterface
+ */
+function ipd_driver(int $deviceId, bool $dryRun)
+{
+    $dev    = Devices::get($deviceId);
+    $driver = $dev ? strtolower((string) ($dev->driver ?? 'vrp')) : 'vrp';
+    switch ($driver) {
+        case 'ros':
+            return new RosDriver($deviceId, $dryRun);
+        case 'vrp':
+        default:
+            return new VrpDriver($deviceId, $dryRun);
+    }
 }
 
 /**

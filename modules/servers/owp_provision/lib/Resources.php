@@ -25,9 +25,9 @@ if (!defined('WHMCS')) {
 
 class Resources
 {
-    public const KINDS      = ['vlan', 'ptp', 'tunnel', 'prefix', 'port', 'loopback', 'acl'];
-    public const INT_KINDS  = ['vlan', 'tunnel', 'acl'];   // 整数标量
-    public const CIDR_KINDS = ['ptp', 'prefix', 'loopback']; // 带掩码的 CIDR/IP
+    public const KINDS      = ['vlan', 'ptp', 'tunnel', 'prefix', 'port', 'loopback', 'acl', 'vpn_ip'];
+    public const INT_KINDS  = ['vlan', 'tunnel', 'acl'];            // 整数标量
+    public const CIDR_KINDS = ['ptp', 'prefix', 'loopback', 'vpn_ip']; // 带掩码的 CIDR/IP（vpn_ip=/32 客户 VPN 地址）
     private const MAX_SPLIT  = 1024;                          // 单次母段切分条目上限（防失控）
 
     // ----------------------------------------------------------------------
@@ -143,6 +143,19 @@ class Resources
                         return $a;
                     }
                     break;
+                // vpn_ip 跨设备（VPN 在独立 ROS 设备）：占用按 allocations.vpn_device_id + vpn_ip 直查，见下方 break 后处理。
+            }
+        }
+        // vpn_ip：不走上面的 $allocs（那是按 device_id 过滤的交付分配）；按 vpn_device_id+vpn_ip 直查。
+        if ((string) $res->kind === 'vpn_ip') {
+            try {
+                $a2 = Capsule::table(Schema::T_ALLOCATIONS)
+                    ->where('vpn_device_id', (int) $res->device_id)
+                    ->where('status', '!=', 'terminated')
+                    ->where('vpn_ip', (string) $res->value)->first();
+                return $a2 ?: null;
+            } catch (\Throwable $e) {
+                return null;
             }
         }
         return null;

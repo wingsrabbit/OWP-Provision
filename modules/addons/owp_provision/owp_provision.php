@@ -240,6 +240,7 @@ function owp_provision_output($vars)
         echo '<div class="alert alert-danger">' . htmlspecialchars($err, ENT_QUOTES) . '</div>';
     }
 
+    echo ipd_admin_queue_panel($modulelink);
     echo ipd_admin_devices_panel($modulelink);
     echo ipd_admin_servers_panel($modulelink);
     echo ipd_admin_resources_panel($modulelink);
@@ -403,6 +404,119 @@ function ipd_field(string $name, string $label, string $value, string $type = 't
     }
     $h .= '</div>';
     return $h;
+}
+
+// ============================================================================
+// 面板：开通队列 + 步骤时间线 / Provisioning queue（读 oplog；样式来自 Claude Design）
+// ============================================================================
+
+function ipd_admin_queue_panel(string $modulelink): string
+{
+    try {
+        $rows = Capsule::table(Schema::T_OPLOG)->orderByDesc('id')->limit(3000)->get();
+    } catch (\Throwable $e) {
+        $rows = [];
+    }
+    $bySvc = [];
+    foreach ($rows as $r) {
+        $sid = (int) $r->serviceid;
+        if ($sid <= 0) {
+            continue;
+        }
+        if (!isset($bySvc[$sid]) && count($bySvc) >= 40) {
+            continue;
+        }
+        $bySvc[$sid][] = $r;
+    }
+    $devName = [];
+    foreach (Devices::all() as $d) {
+        $devName[(int) $d->id] = (string) $d->name;
+    }
+
+    $css = (string) @file_get_contents(__DIR__ . '/dashboard.css');
+    $h   = '<style>' . $css . '</style>';
+    $h  .= '<div class="owp"><div class="owp-panel">';
+    $h  .= '<div class="owp-sec"><span class="owp-sec__n">开通队列 / Provisioning · 步骤时间线</span>'
+        . '<span class="owp-sec__n" style="color:var(--text-3)">' . count($bySvc) . ' 单 · 严格串行</span><span class="owp-rule"></span></div>';
+
+    if (count($bySvc) === 0) {
+        $h .= '<div class="owp-empty"><div class="owp-empty__t">暂无开通/拆除记录</div>'
+            . '<div class="owp-empty__s">服务开通后，这里按步显示「卡在哪一步、哪台设备、回显啥」。日志保留 7 天。</div></div>';
+        return $h . '</div></div>';
+    }
+
+    foreach ($bySvc as $sid => $steps) {
+        $steps = array_reverse($steps); // 时间升序
+        $lastPhase = (string) end($steps)->phase;
+        $batch = array_values(array_filter($steps, static function ($s) use ($lastPhase) {
+            return (string) $s->phase === $lastPhase;
+        }));
+        $hasFail = false;
+        $hasRoll = false;
+        foreach ($batch as $s) {
+            $st = (string) $s->status;
+            if ($st === 'failed' || $st === 'rollback_failed') {
+                $hasFail = true;
+            }
+            if ($st === 'rollback') {
+                $hasRoll = true;
+            }
+        }
+        $client  = ipd_admin_client_label($sid);
+        $uid     = ipd_admin_service_uid($sid);
+        $alloc   = Ipam::getAllocation($sid);
+        $typeTxt = '—';
+        $typeMod = 'transit';
+        if ($alloc) {
+            if (!empty($alloc->vpn_device_id)) {
+                $typeTxt = 'server';
+                $typeMod = 'lease';
+            } else {
+                $typeTxt = strtolower((string) $alloc->delivery_type) === 'gre' ? 'GRE' : 'XC';
+            }
+        }
+        $stBadge = $hasFail ? ['failed', '失败'] : ($hasRoll ? ['rolled', '已回滚'] : ['done', '完成']);
+
+        $prog = '';
+        foreach ($batch as $s) {
+            $st  = (string) $s->status;
+            $seg = $st === 'failed' ? 'owp-prog__seg--failed'
+                : (($st === 'ok' || $st === 'dryrun') ? 'owp-prog__seg--done'
+                : ($st === 'rollback' ? 'owp-prog__seg--rolled' : ''));
+            $prog .= '<i class="owp-prog__seg ' . $seg . '"></i>';
+        }
+
+        $h .= '<details class="owp-order ' . ($hasFail ? 'owp-order--failed' : '') . '">'
+            . '<summary class="owp-order__row"><span class="owp-caret">▸</span>'
+            . '<span class="owp-qpos">' . ($hasFail ? '✕' : '✓') . '</span>'
+            . '<span class="owp-order__client"><span class="owp-order__name">' . htmlspecialchars($client, ENT_QUOTES) . '</span>'
+            . '<span class="owp-order__svc"><a class="owp-link" href="' . htmlspecialchars('clientsservices.php?userid=' . $uid . '&id=' . $sid, ENT_QUOTES) . '" target="_blank" rel="noopener">svc #' . $sid . '</a></span></span>'
+            . '<span class="owp-badge owp-badge--type owp-badge--' . $typeMod . '"><span class="owp-badge__d"></span>' . htmlspecialchars($typeTxt, ENT_QUOTES) . '</span>'
+            . '<span class="owp-prog">' . $prog . '</span><span class="owp-order__sp"></span>'
+            . '<span class="owp-order__elapsed">' . htmlspecialchars($lastPhase, ENT_QUOTES) . '</span>'
+            . '<span class="owp-badge owp-badge--' . $stBadge[0] . '"><span class="owp-badge__d"></span>' . $stBadge[1] . '</span>'
+            . '</summary><div class="owp-timeline"><ol class="owp-steps">';
+
+        foreach ($batch as $s) {
+            $st   = (string) $s->status;
+            $fail = ($st === 'failed' || $st === 'rollback_failed');
+            $node = $fail ? '✕' : ($st === 'rollback' ? '↺' : '✓');
+            $dev  = $s->device_id ? ($devName[(int) $s->device_id] ?? ('#' . (int) $s->device_id)) : '';
+            $time = $s->created_at ? substr((string) $s->created_at, 11, 8) : '';
+            $resp = trim((string) ($s->response ?? ''));
+            $h .= '<li class="owp-step ' . ($fail ? 'owp-step--failed' : 'owp-step--done') . '"><span class="owp-step__node">' . $node . '</span>'
+                . '<div class="owp-step__main"><div class="owp-step__head">'
+                . '<span class="owp-step__name">' . htmlspecialchars((string) $s->step, ENT_QUOTES) . '</span>'
+                . '<span class="owp-step__meta">' . ($dev !== '' ? '<span class="owp-step__device">' . htmlspecialchars($dev, ENT_QUOTES) . '</span>' : '')
+                . '<span class="owp-step__time">' . htmlspecialchars($time, ENT_QUOTES) . '</span></span></div>';
+            if ($resp !== '') {
+                $h .= '<div class="' . ($fail ? 'owp-step__error' : 'owp-step__detail') . '">' . htmlspecialchars(mb_substr($resp, 0, 400), ENT_QUOTES) . '</div>';
+            }
+            $h .= '</div></li>';
+        }
+        $h .= '</ol></div></details>';
+    }
+    return $h . '</div></div>';
 }
 
 // ============================================================================

@@ -7,6 +7,9 @@
 
 v2 产品驱动重构进行中（分阶段 PR 合入）。
 
+### 新增
+- **CI**：GitHub Actions `lint` 工作流，每次 push/PR 用 PHP 8.3 对全部 `modules/**/*.php` 跑 `php -l` 语法校验（替代本地 lint）。
+
 ### 变更
 - **模块更名** `owp_ipdelivery` → `owp_provision`（命名空间 `OwpProvision`、表前缀 `mod_owp_provision_`、品牌 DisplayName「OWP Provision」）。新前缀视为全新安装；旧 `owp_ipdelivery` 安装不在线迁移路径内。
 - 本地工程并入单一 `OWP-Provision` 工作副本（内部部署记录走 `*.local.md` / `DEPLOY-*.md`，已 gitignore，不入公共库）。

@@ -10,6 +10,7 @@
 ![WHMCS](https://img.shields.io/badge/WHMCS-9.x-2a9fd6)
 ![PHP](https://img.shields.io/badge/PHP-8.3%2B-777bb4)
 ![license](https://img.shields.io/badge/license-MIT-orange)
+[![lint](https://github.com/wingsrabbit/OWP-Provision/actions/workflows/lint.yml/badge.svg)](https://github.com/wingsrabbit/OWP-Provision/actions/workflows/lint.yml)
 
 ---
 

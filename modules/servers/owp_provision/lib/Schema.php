@@ -25,7 +25,7 @@ if (!defined('WHMCS')) {
 class Schema
 {
     /** 当前 schema 版本；addon `_upgrade()` 按此迁移。 */
-    public const VERSION = '1.0.0';
+    public const VERSION = '2.0.0';
 
     public const T_POOLS       = 'mod_owp_provision_pools';       // 已弃用（迁移源/回滚保留）
     public const T_RESOURCES   = 'mod_owp_provision_resources';   // 清单式 IPAM：逐条具体资源
@@ -373,6 +373,37 @@ class Schema
         if (version_compare($fromVersion, '1.3.0', '<')) {
             self::migrateToResources();
             self::markResourcesMigrated();
+        }
+
+        // 2.0.0：产品驱动重构——给已装库（v1.x）补 v2 新列（createX 见表即 return，不会补列）。
+        if (version_compare($fromVersion, '2.0.0', '<')) {
+            self::addColumn(self::T_DEVICES, 'driver', function ($t) { $t->string('driver', 8)->default('vrp'); });
+            self::addColumn(self::T_DEVICES, 'ros_lan_if', function ($t) { $t->string('ros_lan_if', 32)->nullable(); });
+            self::addColumn(self::T_DEVICES, 'ros_wan_if', function ($t) { $t->string('ros_wan_if', 32)->nullable(); });
+            self::addColumn(self::T_DEVICES, 'ros_l2tp_local', function ($t) { $t->string('ros_l2tp_local', 32)->nullable(); });
+            self::addColumn(self::T_DEVICES, 'ros_ikev2_peer', function ($t) { $t->string('ros_ikev2_peer', 64)->nullable(); });
+            foreach ([
+                'vpn_device_id' => function ($t) { $t->unsignedInteger('vpn_device_id')->nullable(); },
+                'vpn_ip'        => function ($t) { $t->string('vpn_ip', 32)->nullable(); },
+                'vpn_target'    => function ($t) { $t->string('vpn_target', 64)->nullable(); },
+                'vpn_user'      => function ($t) { $t->string('vpn_user', 64)->nullable(); },
+                'vpn_pass_enc'  => function ($t) { $t->text('vpn_pass_enc')->nullable(); },
+                'vpn_revealed'  => function ($t) { $t->tinyInteger('vpn_revealed')->default(0); },
+            ] as $col => $cb) {
+                self::addColumn(self::T_ALLOCATIONS, $col, $cb);
+            }
+            // T_OPLOG / T_SERVERS 为 2.0 新表，已由 ensureTables() 建好。
+        }
+    }
+
+    /** 幂等给已存在的表补一列（缺列才加）。 */
+    private static function addColumn(string $table, string $col, callable $def): void
+    {
+        try {
+            if (Capsule::schema()->hasTable($table) && !Capsule::schema()->hasColumn($table, $col)) {
+                Capsule::schema()->table($table, $def);
+            }
+        } catch (\Throwable $e) {
         }
     }
 

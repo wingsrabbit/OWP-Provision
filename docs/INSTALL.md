@@ -221,3 +221,35 @@ display ip routing-table
 display interface brief | include Vlanif|Tunnel|LoopBack
 ```
 对残留项手工 `undo` 后 `save`。
+
+---
+
+## 附录 A：v2 — 服务器租赁 / 托管 + VPN + iDRAC
+
+v2 在「纯 IP 交付」之外加了**服务器租赁/托管**形态：下单选/绑一台空闲服务器 → 在它的交换机端口发 IP → 经 RouterOS 给它的 IPMI 开 VPN → （可选）在 iDRAC 建最小权限客户子账号。开通是**全局锁串行 + 每步落 oplog + 失败逐步回滚**，后台「开通队列」面板可看「卡在哪一步」。
+
+### A.1 加 RouterOS 设备
+addon 管理页「设备」区新增一台，**设备类型 = ros**：
+- 连接：`direct`（WHMCS 直连 ROS 公网）+ 设备 IP/端口、写账号（RouterOS 用户，如 `admin`）；私钥填「私钥内容」（RouterOS 用 key 登录）或写密码。
+- ROS 站点字段：`ros_lan_if`（IPMI 侧接口）、`ros_wan_if`（公网接口）、VPN 本端地址（如 `10.0.0.254`）、`ros_ikev2_peer`（可选，留空=不开 IKEv2）、IPsec PSK。
+- 「Test Connection」验证（`/system version`）。
+
+### A.2 VPN 地址池
+在「资源」区，为该 **ROS 设备** 加 `vpn_ip` 类资源（母段切 /32，如 `10.0.1.0/24` → 254 个客户地址）。每开一个服务器服务占一个。
+
+### A.3 服务器库存
+「服务器库存」区新增每台物理机：名称、**所在交换机 + 端口**（NIC 线缆到的口）、**IPMI 所在 ROS**、IPMI IP、IPMI 类型（idrac/ilo/generic）、**iDRAC 管理账号/密码**（建客户子账号用）、线路标签、规格。状态 free 才会被下单绑定。
+
+### A.4 iDRAC 自动建号（可选，全局开关）
+addon *Configure* 填：
+- **mgmtSrcIp** = 本 WHMCS 主机公网 IP（开通时 ROS 临时 DNAT 只放行它去配 iDRAC）。**留空 = 不自动建 iDRAC 账号**（只发 IP + VPN，账号人工建）。
+- **dnatPortBase**（默认 20000）= 临时 DNAT 公网端口基数（实际端口 = 基数 + serviceid）。
+> 开通时：ROS 开临时 DNAT（公网:端口 → iDRAC:443，锁 mgmtSrcIp）→ WHMCS 经 Redfish 建客户子账号（角色 Operator）→ **撤 DNAT**。销户反向删号。iDRAC 步骤**非致命**（失败仅告警，不影响已成的网络+VPN）。
+
+### A.5 产品（服务器形态）
+建产品时模块 ConfigOption **`serviceModel` 选 `server`**；Configurable Options 建议：`bandwidth`、`prefix_size`、`line`（线路，1:1 匹配带 line 标签的 prefix 资源与服务器）、可选 `server`（指定具体服务器 id；不填=按线路自动挑空闲）。VPN 账号默认用 WHMCS 服务自带 `username/password`，客户在服务详情页**「查看一次」**。
+
+### A.6 线路 ↔ IP 1:1
+给 `prefix` 资源条目打 `line` 标签（如 `HKBGP` / `HKBGP-CN`），各对应一个已在上游按该 blend 宣告的聚合；下单选 `line` → 从该线路的 prefix 与服务器里分配。
+
+> 真机命令（VRP / RouterOS / iDRAC Redfish）由运维在真实设备验收；命令串分别集中在 `lib/Templates.php` 与 `lib/Drivers/{Ros,Drac}Driver.php`，便于按设备型号微调。

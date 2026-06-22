@@ -2,11 +2,11 @@
 
 > **WHMCS 产品驱动的边缘基础设施开通模块** —— 客户在前端下单（租赁/托管服务器、IP Transit、VPN 接入…），模块据「产品蓝图」自动在 接入交换机 / RouterOS / 服务器 BMC 上编排开通并自动回收。内置清单式 IPAM、多设备、多设备类型驱动。
 >
-> **当前能力（v1 线，已真机验证）**：在华为 VRP 接入交换机上以 **物理交叉连接(XC)** 或 **GRE 隧道** 交付公网 IPv4，端口 `qos lr` 限速，暂停/恢复/销户反向拆除回收。
+> **v2（产品驱动）已交付**：服务器租赁/托管（绑机 + 发 IP + IPMI VPN + iDRAC 自动建号）、多协议 VPN（L2TP/PPTP/SSTP/OpenVPN/IKEv2）、服务器库存、编排器（全局锁串行 + 按步日志 + 失败回滚）、后台开通队列时间线 UI——见下方 [v2 能力](#v2-能力产品驱动)。
 >
-> **v2 进行中**：见下方 [路线图](#路线图-v2)。
+> **IP 交付核心（已真机验证）**：在华为 VRP 接入交换机上以 **物理交叉连接(XC)** 或 **GRE 隧道** 交付公网 IPv4，端口 `qos lr` 限速，暂停/恢复/销户反向拆除回收。
 
-![version](https://img.shields.io/badge/version-1.0-blue)
+![version](https://img.shields.io/badge/version-2.0-blue)
 ![WHMCS](https://img.shields.io/badge/WHMCS-9.x-2a9fd6)
 ![PHP](https://img.shields.io/badge/PHP-8.3%2B-777bb4)
 ![license](https://img.shields.io/badge/license-MIT-orange)
@@ -16,7 +16,7 @@
 
 ## 目录
 
-- [路线图 (v2)](#路线图-v2)
+- [v2 能力（产品驱动）](#v2-能力产品驱动)
 - [功能特性](#功能特性)
 - [工作原理](#工作原理)
 - [环境要求](#环境要求)
@@ -31,17 +31,17 @@
 
 ---
 
-## 路线图 (v2)
+## v2 能力（产品驱动）
 
-v2 把模块从「IP 交付」重构为**产品驱动的开通编排器**：一个 WHMCS 产品 = 一份**蓝图**（声明在哪些设备上、按什么顺序、做哪些步骤、消耗哪些库存），`CreateAccount` 跑蓝图、`Terminate` 逆序回滚。
+v2 把模块从「IP 交付」重构为**产品驱动的开通编排器**：一个 WHMCS 产品 = 一份**蓝图**（产品 ConfigOption `serviceModel`：`ip_transit` 或 `server`），`CreateAccount` 在全局锁内按步编排、`Terminate` 逆序回滚。
 
-- **设备驱动分层**：`Drivers/Vrp`（华为 VRP 交换机）、`Drivers/Ros`（MikroTik RouterOS）、`Drivers/Drac`（服务器 BMC / iDRAC Redfish）；设备表带 `driver` 字段，新增设备类型不动蓝图。
-- **蓝图**：`IP Transit (XC)`（= 现有能力）、`服务器租赁 / 托管`（选服务器 → 绑交换机端口 → `qos lr`+burst → 按线路发 IP → ROS 建 VPN+隔离 → iDRAC 建最小权限账号）。
-- **多协议 VPN**（RouterOS）：L2TP / PPTP / SSTP / OpenVPN（共用一条 ppp secret）+ IKEv2/PSK；每客户隔离（只通公网 + 自己 IPMI，其余 drop）。
-- **服务器库存**：物理机资产表（型号 / 所属交换机+端口 / IPMI / 规格 / 状态），admin 维护，下单 1:1 绑定。
-- **编排器**：全局锁串行执行（杜绝并发乱序）、每步留日志（保留 7 天、后台内联看「卡在哪一步」）、失败逐步回滚。
-- **凭据**：VPN / BMC 账号一次性查看（看一次后掩码、可重置）。
-- BGP / 上游路由器（MX）自动化：预留 `Drivers/Junos`，暂不实现。
+- **设备驱动分层**：`Drivers/VrpDriver`（华为 VRP 交换机）、`Drivers/RosDriver`（MikroTik RouterOS：VPN + iDRAC 临时 DNAT）、`Drivers/DracDriver`（iDRAC Redfish）；设备表带 `driver` 字段，新增设备类型不动蓝图。
+- **服务器租赁 / 托管蓝图**：选/绑空闲服务器（库存原子绑定）→ 在其交换机端口发 IP（XC：vlan/vlanif/`qos lr`/route）→ 经其 ROS 开 IPMI VPN → iDRAC 建最小权限子账号 → 交付（网络通 + VPN 可达 IPMI，OS 客户自装）。
+- **多协议 VPN**（RouterOS）：一条 `ppp secret`(service=any) 即 L2TP / PPTP / SSTP / OpenVPN + 可选 IKEv2；每客户专属 pin IP + 隔离 filter（**只通公网 + 自己 IPMI，其余 drop**）。
+- **服务器库存**：物理机资产表（所属交换机+端口 / IPMI / 所在 ROS / 线路 / 规格 / 状态），admin 维护，下单 1:1 绑定。
+- **编排器**：全局锁**串行执行**（杜绝并发乱序）、每步落 `oplog`（保留 7 天）、失败**逐步回滚**；后台**开通队列 + 步骤时间线** UI 看「卡在哪一步」。
+- **凭据一次性查看**：VPN 账号客户区「查看一次」后掩码。
+- **BGP / 上游路由器（MX）自动化**：预留 `Drivers/Junos`，暂未实现。
 
 ---
 

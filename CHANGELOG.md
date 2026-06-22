@@ -5,7 +5,9 @@
 
 ## [Unreleased]
 
-v2 产品驱动重构进行中（分阶段 PR 合入）。
+## [2.0.0] - 2026-06-22
+
+**产品驱动重构**：从「IP 交付插件」重构为**产品驱动的开通编排器**——一个 WHMCS 产品 = 一份蓝图，编排器（全局锁串行 + 按步日志 + 失败逐步回滚）跨「华为 VRP 交换机 / MikroTik RouterOS / 服务器 iDRAC」编排开通。新增：服务器租赁·托管（绑机+发IP+IPMI VPN+iDRAC 建号）、多协议 VPN、服务器库存、后台开通队列时间线 UI。模块更名 `owp_provision`（表前缀 `mod_owp_provision_`）。详见下方各项。
 
 ### 新增
 - **CI**：GitHub Actions `lint` 工作流，每次 push/PR 用 PHP 8.3 对全部 `modules/**/*.php` 跑 `php -l` 语法校验（替代本地 lint）。

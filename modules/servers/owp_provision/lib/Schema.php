@@ -34,6 +34,7 @@ class Schema
     public const T_LOG         = 'mod_owp_provision_log';
     public const T_DEVICES     = 'mod_owp_provision_devices';
     public const T_OPLOG       = 'mod_owp_provision_oplog';       // v2 编排器按步日志（保留 7 天）
+    public const T_SERVERS     = 'mod_owp_provision_servers';     // v2 服务器库存（租赁/托管）
 
     /**
      * 幂等建全部表。返回简单结果数组，便于 addon `_activate()` 直接转成 WHMCS 期望格式。
@@ -50,10 +51,11 @@ class Schema
             self::createConfig();
             self::createLog();
             self::createOplog();
+            self::createServers();
 
             return [
                 'status'      => 'success',
-                'description' => 'OWP Provision：7 张表已就绪（devices/pools/resources/allocations/config/log/oplog）。',
+                'description' => 'OWP Provision：8 张表已就绪（devices/pools/resources/allocations/config/log/oplog/servers）。',
             ];
         } catch (\Throwable $e) {
             return [
@@ -75,6 +77,7 @@ class Schema
         self::createConfig();
         self::createLog();
         self::createOplog();
+        self::createServers();
         self::autoSeedResources(); // 安全网：升级后即使 _upgrade 未触发，也保证 resources 已从 pools 播种一次
     }
 
@@ -307,6 +310,35 @@ class Schema
             $t->text('request')->nullable()->comment('该步请求/命令摘要');
             $t->longText('response')->nullable()->comment('该步回显/错误');
             $t->timestamp('created_at')->nullable()->index();
+            $t->engine = 'InnoDB';
+        });
+    }
+
+    /**
+     * v2 服务器库存（租赁/托管）：每台物理机一行，admin 维护。下单选服务器→绑它的交换机端口 +
+     * 经其 ROS 开 IPMI VPN。白标：IP/接口等都在设备/资源里配，这里只是资产登记。
+     */
+    public static function createServers(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_SERVERS)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_SERVERS, function ($t) {
+            $t->increments('id');
+            $t->string('name', 64)->comment('资产名/标签，如 R640-01');
+            $t->unsignedInteger('device_id')->comment('线缆所在交换机 mod_owp_provision_devices.id');
+            $t->string('port', 48)->comment('服务器 NIC 线缆到的交换机端口');
+            $t->unsignedInteger('vpn_device_id')->nullable()->comment('其 IPMI 所在 ROS 设备 id（开 VPN 用）');
+            $t->string('ipmi_ip', 32)->nullable()->comment('IPMI/BMC 地址');
+            $t->string('ipmi_kind', 12)->default('idrac')->comment('idrac|ilo|generic');
+            $t->string('line', 64)->nullable()->comment('该服务器可用线路标签（对应 prefix 资源 line，可空=不限）');
+            $t->text('specs')->nullable()->comment('规格描述（CPU/内存/盘/网卡）');
+            $t->string('status', 12)->default('free')->comment('free|rented|maintenance');
+            $t->unsignedInteger('serviceid')->nullable()->comment('当前租用的服务 id');
+            $t->timestamp('created_at')->nullable();
+            $t->timestamp('updated_at')->nullable();
+            $t->index('device_id');
+            $t->index('status');
             $t->engine = 'InnoDB';
         });
     }
@@ -551,7 +583,7 @@ class Schema
      */
     public static function dropAll(): void
     {
-        foreach ([self::T_OPLOG, self::T_LOG, self::T_ALLOCATIONS, self::T_CONFIG, self::T_RESOURCES, self::T_POOLS, self::T_DEVICES] as $tbl) {
+        foreach ([self::T_SERVERS, self::T_OPLOG, self::T_LOG, self::T_ALLOCATIONS, self::T_CONFIG, self::T_RESOURCES, self::T_POOLS, self::T_DEVICES] as $tbl) {
             if (Capsule::schema()->hasTable($tbl)) {
                 Capsule::schema()->drop($tbl);
             }

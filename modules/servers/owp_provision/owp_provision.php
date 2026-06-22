@@ -31,6 +31,7 @@ use WHMCS\Database\Capsule;
 use OwpProvision\Schema;
 use OwpProvision\Config;
 use OwpProvision\Devices;
+use OwpProvision\Servers;
 use OwpProvision\Ipam;
 use OwpProvision\Templates;
 use OwpProvision\Connection;
@@ -47,6 +48,7 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/lib/Schema.php';
 require_once __DIR__ . '/lib/Config.php';
 require_once __DIR__ . '/lib/Devices.php';
+require_once __DIR__ . '/lib/Servers.php';
 require_once __DIR__ . '/lib/Types.php';
 require_once __DIR__ . '/lib/Ipam.php';
 require_once __DIR__ . '/lib/Resources.php';
@@ -116,6 +118,14 @@ function owp_provision_ConfigOptions()
             'Type'         => 'yesno',
             'Description'  => '勾选后：只生成命令块并写日志，不真连设备（内部测试用）。也可在 addon 配置里开全局 dry-run。',
         ],
+        // configoption5
+        'serviceModel' => [
+            'FriendlyName' => 'Service Model 服务形态',
+            'Type'         => 'dropdown',
+            'Options'      => 'ip_transit,server',
+            'Default'      => 'ip_transit',
+            'Description'  => 'ip_transit = 纯 IP 交付（XC/GRE，客户自带设备）；server = 租赁/托管服务器（选服务器→绑端口+发IP+开 IPMI VPN）。',
+        ],
     ];
 }
 
@@ -137,6 +147,11 @@ function owp_provision_CreateAccount(array $params)
         Schema::ensureTables();
         if ($serviceId <= 0) {
             return 'Error: 缺少 serviceid（无法分配/记录）。请先 logModuleCall 检查 $params。';
+        }
+
+        // 服务形态分流：server=租赁/托管（绑服务器+发IP+开 IPMI VPN）；否则走纯 IP 交付（XC/GRE）。
+        if (strtolower((string) ($params['configoption5'] ?? 'ip_transit')) === 'server') {
+            return ipd_create_server($params);
         }
 
         // 1) 读参数
@@ -371,6 +386,23 @@ function owp_provision_TerminateAccount(array $params)
                 return 'Error: 拆除后仍检测到残留，请人工核查（资源暂不回池）：' . $verify['error'];
             }
 
+            // 服务器形态：撤 IPMI VPN（ROS）+ 释放服务器库存
+            $rosId = (int) ($alloc['vpn_device_id'] ?? 0);
+            if ($rosId > 0) {
+                try {
+                    $ros = ipd_ros($params, $rosId);
+                    $ros->vpnRevoke($serviceId);
+                    $ros->dnatClose($serviceId);
+                    Orchestrator::log($serviceId, 'terminate', 'ros.vpn_revoke', $rosId, 'ok', '', '已撤 VPN + 管理 DNAT');
+                } catch (\Throwable $e) {
+                    Orchestrator::log($serviceId, 'terminate', 'ros.vpn_revoke', $rosId, 'failed', '', $e->getMessage());
+                }
+            }
+            if (Servers::byService($serviceId)) {
+                Servers::releaseByService($serviceId);
+                Orchestrator::log($serviceId, 'terminate', 'server.release', null, 'ok', '', '服务器回库存(free)');
+            }
+
             Ipam::release($serviceId);
             Orchestrator::log($serviceId, 'terminate', 'release', $devId, 'ok', '', '校验无残留，资源回池');
             if (function_exists('logActivity')) {
@@ -446,6 +478,120 @@ function owp_provision_ChangePackage(array $params)
         });
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        return 'Error: ' . $e->getMessage();
+    }
+}
+
+// ============================================================================
+// 蓝图：服务器租赁 / 托管（serviceModel=server）
+// ============================================================================
+
+/**
+ * 服务器开通蓝图：绑空闲服务器 → 在它的交换机端口发 IP（XC 式）→ 经其 ROS 开 IPMI VPN。
+ * 全局锁串行；每步 oplog；任一步失败逐步回滚（撤 VPN / 拆交换机 / 回收分配 / 释放服务器）。
+ * 交付即「网络通 + VPN 可达 IPMI」，OS 由客户自行经 IPMI 安装（iDRAC 自动建号见 P4）。
+ *
+ * @return string 'success' | 错误串
+ */
+function ipd_create_server(array $params)
+{
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    try {
+        if ($serviceId <= 0) {
+            return 'Error: 缺少 serviceid。';
+        }
+        // 读参数
+        $bandwidth    = ipd_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
+        $prefixSize   = ipd_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/29'));
+        $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
+        $line         = ipd_pluck_co($params, ['line', 'Line', '线路'], '');
+        $serverSel    = ipd_pluck_co($params, ['server', 'Server', '服务器'], '');
+        $custTag      = Templates::custTag($namingPrefix, $serviceId, ipd_client_name($params));
+        $wantServerId = ctype_digit($serverSel) ? (int) $serverSel : 0;
+        // VPN 凭据 = WHMCS 服务自带 username/password（客户可一次性查看）
+        $vpnUser = trim((string) ($params['username'] ?? ''));
+        $vpnPass = (string) ($params['password'] ?? '');
+
+        try {
+            Templates::bandwidthToCirKbps($bandwidth);
+        } catch (\Throwable $e) {
+            return 'Error: 带宽档无法换算 CIR：' . $e->getMessage();
+        }
+
+        return Orchestrator::withLock(function () use ($params, $serviceId, $bandwidth, $prefixSize, $custTag, $line, $wantServerId, $vpnUser, $vpnPass) {
+            // 1) 绑定空闲服务器（原子）
+            try {
+                $srv = Servers::bindFree($serviceId, $line, $wantServerId);
+            } catch (\Throwable $e) {
+                Orchestrator::log($serviceId, 'create_server', 'bind', null, 'failed', '', $e->getMessage());
+                return 'Error: 绑定服务器失败：' . $e->getMessage();
+            }
+            $deviceId = (int) $srv->device_id;
+            $port     = (string) $srv->port;
+            Orchestrator::log($serviceId, 'create_server', 'bind', $deviceId, 'ok', '', json_encode(
+                ['server' => $srv->name ?? '', 'port' => $port, 'ipmi' => $srv->ipmi_ip ?? ''],
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ));
+
+            // 2) 在该服务器的固定端口分配并发 IP（复用 XC：vlan+vlanif+port access+qos lr+route）
+            try {
+                $alloc = Ipam::allocateXc($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $port);
+            } catch (\Throwable $e) {
+                Orchestrator::log($serviceId, 'create_server', 'allocate', $deviceId, 'failed', '', $e->getMessage());
+                Servers::releaseByService($serviceId);
+                return 'Error: 资源分配失败：' . $e->getMessage();
+            }
+            $deviceId = (int) ($alloc['device_id'] ?? $deviceId);
+            Orchestrator::log($serviceId, 'create_server', 'allocate', $deviceId, 'ok', '', (string) ($alloc['prefix'] ?? ''));
+
+            // 3) 交换机下发
+            $drv = ipd_vrp($params, $deviceId);
+            $res = $drv->provision($alloc, $custTag);
+            logModuleCall('owp_provision', 'CreateServer', ipd_safe_params($params), $res['output'], $res['block']);
+            if (!$res['dryrun'] && !$res['ok']) {
+                Orchestrator::log($serviceId, 'create_server', 'vrp.provision', $deviceId, 'failed', '', (string) $res['error']);
+                ipd_rollback_create($drv, $alloc, $serviceId);
+                Servers::releaseByService($serviceId);
+                return 'Error: 交换机下发失败，已回滚：' . $res['error'];
+            }
+            Orchestrator::log($serviceId, 'create_server', 'vrp.provision', $deviceId, $res['dryrun'] ? 'dryrun' : 'ok', '', '');
+
+            // 4) 经 ROS 开 IPMI VPN（一条 ppp secret = L2TP/PPTP/SSTP/OpenVPN + 可选 IKEv2）
+            $rosId = (int) ($srv->vpn_device_id ?? 0);
+            if ($rosId > 0 && !empty($srv->ipmi_ip) && $vpnUser !== '') {
+                try {
+                    $vpnIp = Ipam::pickFreeVpnIp($rosId);
+                    ipd_ros($params, $rosId)->vpnGrant($serviceId, $vpnIp, (string) $srv->ipmi_ip, $vpnUser, $vpnPass);
+                    Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)->update([
+                        'vpn_device_id' => $rosId,
+                        'vpn_ip'        => $vpnIp,
+                        'vpn_target'    => (string) $srv->ipmi_ip,
+                        'vpn_user'      => $vpnUser,
+                        'vpn_pass_enc'  => Config::encrypt($vpnPass),
+                        'updated_at'    => date('Y-m-d H:i:s'),
+                    ]);
+                    Orchestrator::log($serviceId, 'create_server', 'ros.vpn', $rosId, $res['dryrun'] ? 'dryrun' : 'ok', '', $vpnIp . ' → ' . $srv->ipmi_ip);
+                } catch (\Throwable $e) {
+                    Orchestrator::log($serviceId, 'create_server', 'ros.vpn', $rosId, 'failed', '', $e->getMessage());
+                    try { ipd_ros($params, $rosId)->vpnRevoke($serviceId); } catch (\Throwable $re) {}
+                    ipd_rollback_create($drv, $alloc, $serviceId);
+                    Servers::releaseByService($serviceId);
+                    return 'Error: IPMI VPN 开通失败，已回滚：' . $e->getMessage();
+                }
+            } else {
+                Orchestrator::log($serviceId, 'create_server', 'ros.vpn', null, 'skipped', '', '未配置 ROS/IPMI 或无服务凭据，跳过 VPN');
+            }
+
+            // 5) 回写 + 活动日志
+            ipd_writeback_customfields($params, $alloc);
+            ipd_set_customfield($params, 'Server', (string) ($srv->name ?? ''));
+            if (function_exists('logActivity')) {
+                logActivity('[OWP Provision] 服务 #' . $serviceId . ' 服务器开通（' . ($srv->name ?? '') . '，prefix=' . ($alloc['prefix'] ?? '') . '）。');
+            }
+            return 'success';
+        });
+    } catch (\Throwable $e) {
+        logModuleCall('owp_provision', 'ipd_create_server', ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -736,6 +882,12 @@ function owp_provision_VerifyDelivery(array $params)
 function ipd_vrp(array $params, int $deviceId): VrpDriver
 {
     return new VrpDriver($deviceId, Config::isDryRun($params));
+}
+
+/** 构造某 ROS 设备的 RosDriver（VPN/iDRAC 通道用）。 */
+function ipd_ros(array $params, int $deviceId): RosDriver
+{
+    return new RosDriver($deviceId, Config::isDryRun($params));
 }
 
 /**

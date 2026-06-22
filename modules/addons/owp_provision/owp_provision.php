@@ -24,6 +24,7 @@ use WHMCS\Database\Capsule;
 use OwpProvision\Schema;
 use OwpProvision\Config;
 use OwpProvision\Devices;
+use OwpProvision\Servers;
 use OwpProvision\Ipam;
 use OwpProvision\Resources;
 use OwpProvision\Connection;
@@ -38,6 +39,7 @@ $ipdLibDir = dirname(__DIR__, 2) . '/servers/owp_provision/lib';
 require_once $ipdLibDir . '/Schema.php';
 require_once $ipdLibDir . '/Config.php';
 require_once $ipdLibDir . '/Devices.php';
+require_once $ipdLibDir . '/Servers.php';
 require_once $ipdLibDir . '/Types.php';
 require_once $ipdLibDir . '/Ipam.php';
 require_once $ipdLibDir . '/Resources.php';
@@ -167,6 +169,22 @@ function owp_provision_output($vars)
                         [$ok, $msg] = ipd_admin_device_test((int) ($_POST['id'] ?? 0));
                         if ($ok) { $notice = '连接测试通过：' . $msg; } else { $err = '连接测试失败：' . $msg; }
                         break;
+                    // ---- 服务器库存 ----
+                    case 'server_add':
+                        $sid = ipd_admin_server_add();
+                        $notice = '已新增服务器 #' . $sid . '。';
+                        break;
+                    case 'server_save':
+                        ipd_admin_server_save((int) ($_POST['id'] ?? 0));
+                        $notice = '已保存服务器。';
+                        break;
+                    case 'server_setstatus':
+                        Servers::setStatus((int) ($_POST['id'] ?? 0), (string) ($_POST['status'] ?? 'free') === 'maintenance' ? 'maintenance' : 'free');
+                        $notice = '已更新服务器状态。';
+                        break;
+                    case 'server_delete':
+                        $notice = ipd_admin_server_delete((int) ($_POST['id'] ?? 0));
+                        break;
                     // ---- 资源（清单式 IPAM）----
                     case 'res_split':
                         $notice = ipd_admin_res_split();
@@ -213,6 +231,7 @@ function owp_provision_output($vars)
     }
 
     echo ipd_admin_devices_panel($modulelink);
+    echo ipd_admin_servers_panel($modulelink);
     echo ipd_admin_resources_panel($modulelink);
     echo ipd_admin_allocations_panel($modulelink);
 }
@@ -374,6 +393,173 @@ function ipd_field(string $name, string $label, string $value, string $type = 't
     }
     $h .= '</div>';
     return $h;
+}
+
+// ============================================================================
+// 面板：服务器库存 / Servers（租赁·托管）
+// ============================================================================
+
+function ipd_admin_servers_panel(string $modulelink): string
+{
+    $servers = Servers::all();
+    $devById = [];
+    foreach (Devices::all() as $d) {
+        $devById[(int) $d->id] = (string) $d->name;
+    }
+
+    $html  = '<div class="ipd-card"><h3>服务器库存 / Servers（租赁·托管）</h3>';
+    $html .= '<p style="color:#666">每台物理机：所在交换机+端口、IPMI、所在 ROS（开 VPN 用）、可用线路、状态。下单 serviceModel=server 的产品时按线路挑空闲机绑定。</p>';
+    $html .= '<table class="table table-condensed table-striped"><thead><tr>'
+        . '<th>ID</th><th>名称</th><th>交换机</th><th>端口</th><th>IPMI</th><th>ROS</th><th>线路</th><th>状态</th><th>占用</th>'
+        . '</tr></thead><tbody>';
+    foreach ($servers as $s) {
+        $occ = '';
+        if ((string) $s->status === 'rented' && $s->serviceid) {
+            $uid = ipd_admin_service_uid((int) $s->serviceid);
+            $occ = '<a class="ipd-occ" href="' . htmlspecialchars('clientsservices.php?userid=' . $uid . '&id=' . (int) $s->serviceid, ENT_QUOTES) . '" target="_blank" rel="noopener">服务 #' . (int) $s->serviceid . '</a>';
+        }
+        $html .= '<tr>'
+            . '<td>#' . (int) $s->id . '</td>'
+            . '<td><strong>' . htmlspecialchars((string) $s->name, ENT_QUOTES) . '</strong></td>'
+            . '<td><small>' . htmlspecialchars($devById[(int) $s->device_id] ?? ('#' . (int) $s->device_id), ENT_QUOTES) . '</small></td>'
+            . '<td><small>' . htmlspecialchars((string) $s->port, ENT_QUOTES) . '</small></td>'
+            . '<td><small>' . htmlspecialchars((string) ($s->ipmi_ip ?? ''), ENT_QUOTES) . '</small></td>'
+            . '<td><small>' . ($s->vpn_device_id ? htmlspecialchars($devById[(int) $s->vpn_device_id] ?? ('#' . (int) $s->vpn_device_id), ENT_QUOTES) : '—') . '</small></td>'
+            . '<td><small>' . htmlspecialchars((string) ($s->line ?? ''), ENT_QUOTES) . '</small></td>'
+            . '<td>' . ipd_admin_server_status_badge((string) $s->status) . '</td>'
+            . '<td>' . ($occ !== '' ? $occ : '<small>—</small>') . '</td>'
+            . '</tr>';
+    }
+    if (count($servers) === 0) {
+        $html .= '<tr><td colspan="9"><em>暂无服务器。下方新增。</em></td></tr>';
+    }
+    $html .= '</tbody></table>';
+
+    foreach ($servers as $s) {
+        $html .= '<details class="ipd-dev"><summary>编辑服务器 #' . (int) $s->id . '：' . htmlspecialchars((string) $s->name, ENT_QUOTES) . '</summary>';
+        $html .= ipd_admin_server_form($modulelink, $s);
+        $html .= '<div style="margin-top:8px">';
+        if ((string) $s->status !== 'rented') {
+            $html .= ipd_admin_mini_form($modulelink, 'server_setstatus', ['id' => (int) $s->id, 'status' => (string) $s->status === 'maintenance' ? 'free' : 'maintenance'], (string) $s->status === 'maintenance' ? '设为空闲' : '设为维护', 'btn-default');
+            $html .= ' ' . ipd_admin_mini_form($modulelink, 'server_delete', ['id' => (int) $s->id], '删除', 'btn-danger', '确认删除该服务器？(租用中会被拒)');
+        } else {
+            $html .= '<small style="color:#8a6d3b">租用中：锁定（先销户释放）。</small>';
+        }
+        $html .= '</div></details>';
+    }
+
+    $html .= '<details class="ipd-dev"><summary><strong>＋ 新增服务器 / Add Server</strong></summary>' . ipd_admin_server_form($modulelink, null) . '</details>';
+    $html .= '</div>';
+    return $html;
+}
+
+/** 服务器编辑/新增表单。$s=null 为新增。 */
+function ipd_admin_server_form(string $modulelink, ?object $s): string
+{
+    $isNew = ($s === null);
+    $id    = $isNew ? 0 : (int) $s->id;
+    $act   = $isNew ? 'server_add' : 'server_save';
+    $v = static function (string $f, string $def = '') use ($s): string {
+        return htmlspecialchars((string) ($s->{$f} ?? $def), ENT_QUOTES);
+    };
+    // 设备下拉（交换机 vrp / ROS）
+    $devOpts = '';
+    $rosOpts = '<option value="">（无 / 不开 VPN）</option>';
+    foreach (Devices::all() as $d) {
+        $sel  = (!$isNew && (int) $s->device_id === (int) $d->id) ? ' selected' : '';
+        $rsel = (!$isNew && (int) ($s->vpn_device_id ?? 0) === (int) $d->id) ? ' selected' : '';
+        $label = htmlspecialchars($d->name . '（' . $d->driver . '）', ENT_QUOTES);
+        $devOpts .= '<option value="' . (int) $d->id . '"' . $sel . '>' . $label . '</option>';
+        if ((string) $d->driver === 'ros') {
+            $rosOpts .= '<option value="' . (int) $d->id . '"' . $rsel . '>' . htmlspecialchars((string) $d->name, ENT_QUOTES) . '</option>';
+        }
+    }
+    $ikSel = static function (string $opt) use ($s): string {
+        return (string) ($s->ipmi_kind ?? 'idrac') === $opt ? ' selected' : '';
+    };
+
+    $url = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=' . $act;
+    $h   = '<form method="post" action="' . $url . '" class="ipd-dev-form">' . ipd_admin_token_field()
+        . '<input type="hidden" name="action" value="' . $act . '" />';
+    if (!$isNew) {
+        $h .= '<input type="hidden" name="id" value="' . $id . '" />';
+    }
+    $h .= '<div class="ipd-grid">';
+    $h .= ipd_field('name', '名称 / Name', $v('name'), 'text', '如 R640-01');
+    $h .= '<div class="ipd-f"><label>所在交换机 / Switch</label><select name="device_id" class="form-control">' . $devOpts . '</select></div>';
+    $h .= ipd_field('port', '交换机端口 / Port', $v('port'), 'text', '服务器 NIC 线缆到的口');
+    $h .= '<div class="ipd-f"><label>IPMI 所在 ROS（VPN）</label><select name="vpn_device_id" class="form-control">' . $rosOpts . '</select></div>';
+    $h .= ipd_field('ipmi_ip', 'IPMI IP', $v('ipmi_ip'), 'text', '如 192.168.0.10');
+    $h .= '<div class="ipd-f"><label>IPMI 类型</label><select name="ipmi_kind" class="form-control">'
+        . '<option value="idrac"' . $ikSel('idrac') . '>iDRAC (Dell)</option>'
+        . '<option value="ilo"' . $ikSel('ilo') . '>iLO (HPE)</option>'
+        . '<option value="generic"' . $ikSel('generic') . '>generic</option>'
+        . '</select></div>';
+    $h .= ipd_field('line', '线路标签 / Line', $v('line'), 'text', '对应 prefix 资源 line；空=不限');
+    $h .= '</div>';
+    $h .= '<div class="ipd-f" style="margin-top:8px"><label>规格 / Specs</label>'
+        . '<textarea name="specs" class="form-control" rows="2" placeholder="CPU/内存/盘/网卡">' . $v('specs') . '</textarea></div>';
+    $h .= '<div style="margin-top:10px"><button class="btn btn-primary" type="submit">' . ($isNew ? '新增服务器' : '保存服务器') . '</button></div>';
+    $h .= '</form>';
+    return $h;
+}
+
+function ipd_admin_server_status_badge(string $status): string
+{
+    $map = ['free' => ['#3c763d', '空闲'], 'rented' => ['#8a6d3b', '租用中'], 'maintenance' => ['#777', '维护']];
+    [$c, $l] = $map[$status] ?? ['#333', $status];
+    return '<span style="color:' . $c . ';font-weight:bold">' . htmlspecialchars($l, ENT_QUOTES) . '</span>';
+}
+
+function ipd_admin_server_fields_from_post(): array
+{
+    return [
+        'name'          => trim((string) ($_POST['name'] ?? '')),
+        'device_id'     => (int) ($_POST['device_id'] ?? 0),
+        'port'          => trim((string) ($_POST['port'] ?? '')),
+        'vpn_device_id' => trim((string) ($_POST['vpn_device_id'] ?? '')),
+        'ipmi_ip'       => trim((string) ($_POST['ipmi_ip'] ?? '')),
+        'ipmi_kind'     => in_array((string) ($_POST['ipmi_kind'] ?? 'idrac'), ['idrac', 'ilo', 'generic'], true) ? (string) $_POST['ipmi_kind'] : 'idrac',
+        'line'          => trim((string) ($_POST['line'] ?? '')),
+        'specs'         => trim((string) ($_POST['specs'] ?? '')),
+    ];
+}
+
+function ipd_admin_server_add(): int
+{
+    $f = ipd_admin_server_fields_from_post();
+    if ($f['name'] === '' || $f['device_id'] <= 0 || $f['port'] === '') {
+        throw new \RuntimeException('名称 / 交换机 / 端口 必填。');
+    }
+    if (!Devices::exists($f['device_id'])) {
+        throw new \RuntimeException('所选交换机不存在。');
+    }
+    return Servers::create($f);
+}
+
+function ipd_admin_server_save(int $id): void
+{
+    if ($id <= 0 || !Servers::get($id)) {
+        throw new \RuntimeException('服务器不存在。');
+    }
+    $f = ipd_admin_server_fields_from_post();
+    if ($f['name'] === '' || $f['device_id'] <= 0 || $f['port'] === '') {
+        throw new \RuntimeException('名称 / 交换机 / 端口 必填。');
+    }
+    Servers::update($id, $f);
+}
+
+function ipd_admin_server_delete(int $id): string
+{
+    $s = Servers::get($id);
+    if (!$s) {
+        throw new \RuntimeException('服务器不存在。');
+    }
+    if ((string) $s->status === 'rented') {
+        throw new \RuntimeException('该服务器租用中，请先把相关服务销户后再删除。');
+    }
+    Servers::delete($id);
+    return '已删除服务器 #' . $id . '。';
 }
 
 // ============================================================================

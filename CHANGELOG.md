@@ -3,6 +3,20 @@
 本项目所有重要变更记录于此。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+v2 产品驱动重构进行中（分阶段 PR 合入）。
+
+### 变更
+- **模块更名** `owp_ipdelivery` → `owp_provision`（命名空间 `OwpProvision`、表前缀 `mod_owp_provision_`、品牌 DisplayName「OWP Provision」）。新前缀视为全新安装；旧 `owp_ipdelivery` 安装不在线迁移路径内。
+- 本地工程并入单一 `OWP-Provision` 工作副本（内部部署记录走 `*.local.md` / `DEPLOY-*.md`，已 gitignore，不入公共库）。
+
+### 路线图（后续 PR）
+- 设备驱动分层 `Drivers/{Vrp,Ros,Drac}`（设备表加 `driver`）+ 编排器（全局锁串行、按步日志保留 7 天、失败逐步回滚）+ 蓝图（IP Transit XC / 服务器租赁·托管）。
+- RouterOS 多协议 VPN（L2TP/PPTP/SSTP/OpenVPN 共用 ppp secret + IKEv2/PSK）+ 每客户隔离（仅公网 + 自身 IPMI）。
+- 服务器库存表（型号/交换机+端口/IPMI/规格/状态）+ 下单 1:1 绑定 + iDRAC（Redfish，经 ROS 临时 DNAT）建最小权限账号。
+- 凭据一次性查看；后台开通队列 + 步骤时间线 UI。
+
 ## [1.0.0] - 2026-06-16
 
 首个公开发布。
@@ -20,6 +34,6 @@
 - **客户自助**:GRE 服务客户区自助修改隧道对端 IP(触发重下发),带改频限制。
 - **可扩展类型**:交付类型为注册表式(`lib/Types.php`),新增协议只需加一项 + 配套分配 / 模板,核心分发不变。
 - **Dry-Run**:全局或产品级,只渲染命令块 + 记日志、不触设备,供上线前人工核对。
-- **审计**:每次下发 `logModuleCall` + 可选 `mod_ipdelivery_log`(命令块 / 设备回显 / 结果)。
+- **审计**:每次下发 `logModuleCall` + 可选 `mod_owp_provision_log`(命令块 / 设备回显 / 结果)。
 
 [1.0.0]: https://github.com/wingsrabbit/OWP-IP-Deliver/releases/tag/v1.0.0

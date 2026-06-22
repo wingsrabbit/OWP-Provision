@@ -6,15 +6,15 @@
  * 生命周期函数入口也可调用 ensureTables() 兜底（防止只装了 server 没 Activate addon）。
  *
  * 全部走 WHMCS\Database\Capsule —— 不自建 PDO/mysqli，不硬编码 DB 凭据。
- * 表：InnoDB / utf8mb4，前缀 mod_ipdelivery_。
+ * 表：InnoDB / utf8mb4，前缀 mod_owp_provision_。
  *
  * 不确定 Capsule schema 行为时，先在 addon `_activate()` 里 try/catch 落日志。
  *
- * @package IpDelivery
+ * @package OwpProvision
  * @target  WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 use WHMCS\Database\Capsule;
 
@@ -27,12 +27,12 @@ class Schema
     /** 当前 schema 版本；addon `_upgrade()` 按此迁移。 */
     public const VERSION = '1.0.0';
 
-    public const T_POOLS       = 'mod_ipdelivery_pools';       // 已弃用（迁移源/回滚保留）
-    public const T_RESOURCES   = 'mod_ipdelivery_resources';   // 清单式 IPAM：逐条具体资源
-    public const T_ALLOCATIONS = 'mod_ipdelivery_allocations';
-    public const T_CONFIG      = 'mod_ipdelivery_config';
-    public const T_LOG         = 'mod_ipdelivery_log';
-    public const T_DEVICES     = 'mod_ipdelivery_devices';
+    public const T_POOLS       = 'mod_owp_provision_pools';       // 已弃用（迁移源/回滚保留）
+    public const T_RESOURCES   = 'mod_owp_provision_resources';   // 清单式 IPAM：逐条具体资源
+    public const T_ALLOCATIONS = 'mod_owp_provision_allocations';
+    public const T_CONFIG      = 'mod_owp_provision_config';
+    public const T_LOG         = 'mod_owp_provision_log';
+    public const T_DEVICES     = 'mod_owp_provision_devices';
 
     /**
      * 幂等建全部表。返回简单结果数组，便于 addon `_activate()` 直接转成 WHMCS 期望格式。
@@ -125,7 +125,7 @@ class Schema
         }
         Capsule::schema()->create(self::T_POOLS, function ($t) {
             $t->increments('id');
-            $t->unsignedInteger('device_id')->default(1)->comment('所属设备 mod_ipdelivery_devices.id');
+            $t->unsignedInteger('device_id')->default(1)->comment('所属设备 mod_owp_provision_devices.id');
             // enum 用 string 存，避免不同 MySQL 版本 enum 迁移坑；应用层校验取值。
             $t->string('kind', 16)->comment('vlan|ptp|prefix|port|loopback|tunnel|acl');
             $t->string('value', 255)->comment('池定义');
@@ -153,7 +153,7 @@ class Schema
         }
         Capsule::schema()->create(self::T_RESOURCES, function ($t) {
             $t->increments('id');
-            $t->unsignedInteger('device_id')->default(1)->comment('所属设备 mod_ipdelivery_devices.id');
+            $t->unsignedInteger('device_id')->default(1)->comment('所属设备 mod_owp_provision_devices.id');
             $t->string('kind', 16)->comment('vlan|ptp|prefix|port|loopback|tunnel|acl');
             $t->string('value', 64)->comment('整数/网络地址/IP/端口名');
             $t->unsignedInteger('mask')->nullable()->comment('ptp/prefix/loopback 前缀长度；其余 NULL');
@@ -179,7 +179,7 @@ class Schema
         Capsule::schema()->create(self::T_ALLOCATIONS, function ($t) {
             $t->increments('id');
             $t->unsignedInteger('serviceid')->comment('tblhosting.id');
-            $t->unsignedInteger('device_id')->default(1)->comment('所属设备 mod_ipdelivery_devices.id');
+            $t->unsignedInteger('device_id')->default(1)->comment('所属设备 mod_owp_provision_devices.id');
             $t->string('delivery_type', 8)->comment('xc|gre');
             $t->unsignedInteger('vlan_id')->nullable()->comment('XC 用');
             $t->string('ptp_net', 32)->nullable()->comment('PTP /30，如 100.64.0.8/30');
@@ -205,7 +205,7 @@ class Schema
     }
 
     /**
-     * 设备表：每台接入交换机一条连接配置（非敏感）。敏感凭据加密存 mod_ipdelivery_config，
+     * 设备表：每台接入交换机一条连接配置（非敏感）。敏感凭据加密存 mod_owp_provision_config，
      * key 带设备前缀 `dev{id}_writePass` 等（见 Config）。
      */
     public static function createDevices(): void
@@ -321,7 +321,7 @@ class Schema
         // b) 若无任何设备 → 用旧全局连接配置建「设备 1」
         if ((int) Capsule::table(self::T_DEVICES)->count() === 0) {
             $g = [];
-            foreach (Capsule::table('tbladdonmodules')->where('module', 'owp_ipdelivery')->get() as $r) {
+            foreach (Capsule::table('tbladdonmodules')->where('module', 'owp_provision')->get() as $r) {
                 $g[(string) $r->setting] = (string) ($r->value ?? '');
             }
             Capsule::table(self::T_DEVICES)->insert([
@@ -342,7 +342,7 @@ class Schema
                 'created_at'    => date('Y-m-d H:i:s'),
                 'updated_at'    => date('Y-m-d H:i:s'),
             ]);
-            // c) 旧全局加密凭据（mod_ipdelivery_config）改 dev1_ 前缀（加密 blob 不变，只改 setting 名）
+            // c) 旧全局加密凭据（mod_owp_provision_config）改 dev1_ 前缀（加密 blob 不变，只改 setting 名）
             foreach (['writePass', 'readPass', 'jumpPass', 'jumpKeyPassphrase', 'jumpKeyText'] as $k) {
                 $has    = Capsule::table(self::T_CONFIG)->where('setting', $k)->exists();
                 $hasNew = Capsule::table(self::T_CONFIG)->where('setting', 'dev1_' . $k)->exists();

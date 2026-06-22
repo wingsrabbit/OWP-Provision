@@ -5,10 +5,10 @@
  * 与同名 server 模块成对，共用同一套 DB 表与 lib/（addon require server 目录下的 lib）。
  *
  * 产品化设计：
- *  - **多设备**：连接配置不再是 addon 全局单台，而是 `mod_ipdelivery_devices` 多台，
+ *  - **多设备**：连接配置不再是 addon 全局单台，而是 `mod_owp_provision_devices` 多台，
  *    在本页「设备 / Devices」区自由增删改启停 + 每设备 Test Connection。
  *  - **每设备凭据**（写/读/跳板密码、私钥口令、私钥内容）`EncryptPassword` 加密存
- *    `mod_ipdelivery_config`（key 带 `dev{id}_` 前缀），与设备连接配置同表单「保存即覆盖」。
+ *    `mod_owp_provision_config`（key 带 `dev{id}_` 前缀），与设备连接配置同表单「保存即覆盖」。
  *  - **资源池按类型分区 + 单条可编辑**：每设备 → 每 kind（vlan/ptp/prefix/port/loopback/
  *    tunnel/acl）独立列表，行内改 value/meta/enabled、删除、启停、按类型新增。
  *  - **占用总览**按 设备 + 交付类型 分组。
@@ -21,20 +21,20 @@
  */
 
 use WHMCS\Database\Capsule;
-use IpDelivery\Schema;
-use IpDelivery\Config;
-use IpDelivery\Devices;
-use IpDelivery\Ipam;
-use IpDelivery\Resources;
-use IpDelivery\Connection;
-use IpDelivery\Types;
+use OwpProvision\Schema;
+use OwpProvision\Config;
+use OwpProvision\Devices;
+use OwpProvision\Ipam;
+use OwpProvision\Resources;
+use OwpProvision\Connection;
+use OwpProvision\Types;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
 }
 
 // ---- 共用 lib：require server 模块目录下的 lib（同一套表/逻辑） -----------------
-$ipdLibDir = dirname(__DIR__, 2) . '/servers/owp_ipdelivery/lib';
+$ipdLibDir = dirname(__DIR__, 2) . '/servers/owp_provision/lib';
 require_once $ipdLibDir . '/Schema.php';
 require_once $ipdLibDir . '/Config.php';
 require_once $ipdLibDir . '/Devices.php';
@@ -66,7 +66,7 @@ function ipd_admin_pool_kinds(): array
  * addon 配置：**只放全局非敏感**项。连接配置 + 凭据按设备在本页「设备」区管理。
  * @return array
  */
-function owp_ipdelivery_config()
+function owp_provision_config()
 {
     return [
         'name'     => 'IP Delivery',
@@ -98,22 +98,22 @@ function owp_ipdelivery_config()
 }
 
 /** 激活：建表（Schema 幂等）。 */
-function owp_ipdelivery_activate()
+function owp_provision_activate()
 {
     return Schema::install();
 }
 
 /** 停用：默认不删表（避免误删占用/凭据/设备记录）。 */
-function owp_ipdelivery_deactivate()
+function owp_provision_deactivate()
 {
     return [
         'status'      => 'success',
-        'description' => '已停用。数据表与记录保留（如需彻底清理，请手动删除 mod_ipdelivery_* 表）。',
+        'description' => '已停用。数据表与记录保留（如需彻底清理，请手动删除 mod_owp_provision_* 表）。',
     ];
 }
 
 /** 升级：按已装版本迁移（含 1.2.0 多设备迁移）。 */
-function owp_ipdelivery_upgrade($vars)
+function owp_provision_upgrade($vars)
 {
     try {
         Schema::migrate((string) ($vars['version'] ?? '0'));
@@ -128,10 +128,10 @@ function owp_ipdelivery_upgrade($vars)
 // _output（后台管理页）
 // ============================================================================
 
-function owp_ipdelivery_output($vars)
+function owp_provision_output($vars)
 {
     Schema::ensureTables();
-    $modulelink = $vars['modulelink'] ?? 'addonmodules.php?module=owp_ipdelivery';
+    $modulelink = $vars['modulelink'] ?? 'addonmodules.php?module=owp_provision';
     $action     = $_REQUEST['action'] ?? '';
     $notice     = '';
     $err        = '';
@@ -670,7 +670,7 @@ function ipd_admin_device_test(int $id): array
     $cfg  = Devices::connConfig($id);
     $conn = new Connection($cfg, false);
     $res  = $conn->testConnection(true);
-    logModuleCall('owp_ipdelivery', 'AddonDeviceTest', ['device_id' => $id, 'host' => $cfg['deviceHost'] ?? ''], $res['output'], $res['error']);
+    logModuleCall('owp_provision', 'AddonDeviceTest', ['device_id' => $id, 'host' => $cfg['deviceHost'] ?? ''], $res['output'], $res['error']);
     return [$res['ok'], $res['ok'] ? mb_substr(trim($res['output']), 0, 200) : $res['error']];
 }
 
@@ -857,7 +857,7 @@ function ipdBulkDel(kind){
   var ml=document.getElementById('ipd-modulelink');
   var f=document.createElement('form');
   f.method='POST';
-  f.action=(ml?ml.value:'addonmodules.php?module=owp_ipdelivery')+'&action=res_bulk_delete';
+  f.action=(ml?ml.value:'addonmodules.php?module=owp_provision')+'&action=res_bulk_delete';
   function add(n,v){var i=document.createElement('input');i.type='hidden';i.name=n;i.value=v;f.appendChild(i);}
   add('action','res_bulk_delete');
   add('ipd_token',tok?tok.value:'');

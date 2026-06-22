@@ -26,8 +26,8 @@ This product bundles third-party libraries under the lib/sshv3/ directory:
 
 - phpseclib (v3.0.53) — MIT License — Copyright (c) 2011 TerraFrost and other
   contributors — https://github.com/phpseclib/phpseclib
-  See modules/servers/owp_ipdelivery/lib/sshv3/phpseclib3-LICENSE.txt
+  See modules/servers/owp_provision/lib/sshv3/phpseclib3-LICENSE.txt
 
 - paragonie/constant_time_encoding (v2.8.2) — MIT License — Copyright (c)
   Paragon Initiative Enterprises — https://github.com/paragonie/constant_time_encoding
-  See modules/servers/owp_ipdelivery/lib/sshv3/constant_time-LICENSE.txt
+  See modules/servers/owp_provision/lib/sshv3/constant_time-LICENSE.txt

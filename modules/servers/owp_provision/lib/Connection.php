@@ -22,11 +22,11 @@
  * 命令块：配置类自动追加 save + 应答 Y，回读校验 save 成功；识别 VRP 报错；去 CRLF；
  * 设备执行完主动断连视为正常。读账号 vs 写账号：display/核查用读账号；下发用写账号。
  *
- * @package IpDelivery
+ * @package OwpProvision
  * @target  WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -612,7 +612,7 @@ class Connection
     // 审计日志 + 配置键 + 凭据
     // ----------------------------------------------------------------------
 
-    /** 写一条结构化审计（mod_ipdelivery_log）。失败静默。 */
+    /** 写一条结构化审计（mod_owp_provision_log）。失败静默。 */
     private function auditLog(int $serviceId, string $action, string $block, string $output, string $result): void
     {
         try {

@@ -18,7 +18,7 @@
  * @target WHMCS 9.0.4 / PHP 8.3
  */
 
-namespace IpDelivery;
+namespace OwpProvision;
 
 if (!defined('WHMCS')) {
     die('Access Denied');

@@ -23,18 +23,18 @@
  *    若线上呈现与假设不符，先在函数入口 logModuleCall(__FUNCTION__, var_export($params,true))
  *    落一遍真实结构再调键名。下方 ipd_pluck*() 已做多名兜底。
  *
- * @package IpDelivery
+ * @package OwpProvision
  * @target  WHMCS 9.0.4 / PHP 8.3
  */
 
 use WHMCS\Database\Capsule;
-use IpDelivery\Schema;
-use IpDelivery\Config;
-use IpDelivery\Devices;
-use IpDelivery\Ipam;
-use IpDelivery\Templates;
-use IpDelivery\Connection;
-use IpDelivery\Types;
+use OwpProvision\Schema;
+use OwpProvision\Config;
+use OwpProvision\Devices;
+use OwpProvision\Ipam;
+use OwpProvision\Templates;
+use OwpProvision\Connection;
+use OwpProvision\Types;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -58,7 +58,7 @@ require_once __DIR__ . '/lib/Connection.php';
  * 模块元数据。连接配置放 addon（不绑 Server 条目），故 RequiresServer=false。
  * @return array
  */
-function owp_ipdelivery_MetaData()
+function owp_provision_MetaData()
 {
     return [
         'DisplayName'             => 'IP Delivery',
@@ -76,7 +76,7 @@ function owp_ipdelivery_MetaData()
  *   1 defaultBw  2 defaultPrefix  3 namingPrefix  4 dryRun
  * @return array
  */
-function owp_ipdelivery_ConfigOptions()
+function owp_provision_ConfigOptions()
 {
     return [
         // configoption1
@@ -123,7 +123,7 @@ function owp_ipdelivery_ConfigOptions()
  * @param array $params
  * @return string 'success' | 错误串
  */
-function owp_ipdelivery_CreateAccount(array $params)
+function owp_provision_CreateAccount(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -213,7 +213,7 @@ function owp_ipdelivery_CreateAccount(array $params)
 
         // 7) 下发（含 save+Y；dry-run 只记日志）
         $res = $conn->runConfig($lines, $serviceId, 'CreateAccount');
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
 
         if ($res['dryrun']) {
             // dry-run：回写 custom fields（便于后台看分配结果），返回成功（不触设备）。
@@ -233,7 +233,7 @@ function owp_ipdelivery_CreateAccount(array $params)
         //    liveness 仅记日志，管理员可在客户就绪后用后台「Verify」按钮复检。
         $verify = ipd_verify_delivery($conn, $alloc);
         if (!$verify['ok']) {
-            logModuleCall('owp_ipdelivery', __FUNCTION__ . ':verify-advisory',
+            logModuleCall('owp_provision', __FUNCTION__ . ':verify-advisory',
                 ['serviceid' => $serviceId], (string) ($verify['detail'] ?? ''),
                 '已下发并保存；liveness 暂未通过（通常因客户侧未就绪，非错误）：' . $verify['error']);
             if (function_exists('logActivity')) {
@@ -251,7 +251,7 @@ function owp_ipdelivery_CreateAccount(array $params)
         return 'success';
 
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -260,7 +260,7 @@ function owp_ipdelivery_CreateAccount(array $params)
  * 暂停（可逆）：撤客户段静态路由（停对外可达，保留 VLAN/接口/Tunnel 骨架）→ save。
  * @return string
  */
-function owp_ipdelivery_SuspendAccount(array $params)
+function owp_provision_SuspendAccount(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -272,7 +272,7 @@ function owp_ipdelivery_SuspendAccount(array $params)
 
         $conn = ipd_connection($params, ipd_alloc_device($alloc));
         $res  = $conn->runConfig(Templates::suspend((array) $alloc), $serviceId, 'SuspendAccount');
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
 
         if (!$res['dryrun'] && !$res['ok']) {
             return 'Error: 暂停下发失败：' . $res['error'];
@@ -280,7 +280,7 @@ function owp_ipdelivery_SuspendAccount(array $params)
         Ipam::setStatus($serviceId, 'suspended');
         return 'success';
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -289,7 +289,7 @@ function owp_ipdelivery_SuspendAccount(array $params)
  * 恢复：重下客户段静态路由 → save。
  * @return string
  */
-function owp_ipdelivery_UnsuspendAccount(array $params)
+function owp_provision_UnsuspendAccount(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -301,7 +301,7 @@ function owp_ipdelivery_UnsuspendAccount(array $params)
 
         $conn = ipd_connection($params, ipd_alloc_device($alloc));
         $res  = $conn->runConfig(Templates::unsuspend((array) $alloc), $serviceId, 'UnsuspendAccount');
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
 
         if (!$res['dryrun'] && !$res['ok']) {
             return 'Error: 恢复下发失败：' . $res['error'];
@@ -309,7 +309,7 @@ function owp_ipdelivery_UnsuspendAccount(array $params)
         Ipam::setStatus($serviceId, 'active');
         return 'success';
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -319,7 +319,7 @@ function owp_ipdelivery_UnsuspendAccount(array $params)
  * 释放分配 → 校验已清除。teardown 顺序见拆除模板。
  * @return string
  */
-function owp_ipdelivery_TerminateAccount(array $params)
+function owp_provision_TerminateAccount(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -336,7 +336,7 @@ function owp_ipdelivery_TerminateAccount(array $params)
         $lines = $tm ? Templates::$tm($alloc) : [];
 
         $res = $conn->runConfig($lines, $serviceId, 'TerminateAccount');
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
 
         if ($res['dryrun']) {
             Ipam::release($serviceId);
@@ -360,7 +360,7 @@ function owp_ipdelivery_TerminateAccount(array $params)
         }
         return 'success';
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -370,7 +370,7 @@ function owp_ipdelivery_TerminateAccount(array $params)
  * 改掩码涉及重切前缀+改路由，风险高，暂不自动支持（返回提示，需人工/重开）。
  * @return string
  */
-function owp_ipdelivery_ChangePackage(array $params)
+function owp_provision_ChangePackage(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -415,14 +415,14 @@ function owp_ipdelivery_ChangePackage(array $params)
         }
         $conn = ipd_connection($params, ipd_alloc_device($alloc));
         $res  = $conn->runConfig($bwLines, $serviceId, 'ChangePackage');
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
 
         if (!$res['dryrun'] && !$res['ok']) {
             return 'Error: 改带宽下发失败：' . $res['error'];
         }
         return 'success';
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -438,7 +438,7 @@ function owp_ipdelivery_ChangePackage(array $params)
  * @param array $params
  * @return array{templatefile:string, templateVariables:array}|string
  */
-function owp_ipdelivery_ClientArea(array $params)
+function owp_provision_ClientArea(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
 
@@ -530,7 +530,7 @@ function owp_ipdelivery_ClientArea(array $params)
                 $serviceId,
                 'ChangeRemote'
             );
-            logModuleCall('owp_ipdelivery', 'ClientArea:ChangeRemote', ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', 'ClientArea:ChangeRemote', ipd_safe_params($params), $res['output'], $res['block']);
 
             if (!$res['dryrun'] && !$res['ok']) {
                 $vars['error'] = '改对端下发失败：' . $res['error'];
@@ -560,7 +560,7 @@ function owp_ipdelivery_ClientArea(array $params)
         return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
 
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         $vars['error'] = '客户区出错：' . $e->getMessage();
         return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
     }
@@ -571,10 +571,10 @@ function owp_ipdelivery_ClientArea(array $params)
 // ============================================================================
 
 /**
- * 后台自定义按钮。值 = 对应 owp_ipdelivery_<value>($params) 处理函数。
+ * 后台自定义按钮。值 = 对应 owp_provision_<value>($params) 处理函数。
  * @return array
  */
-function owp_ipdelivery_AdminCustomButtonArray()
+function owp_provision_AdminCustomButtonArray()
 {
     return [
         'Test Connection'  => 'TestConnection',
@@ -588,7 +588,7 @@ function owp_ipdelivery_AdminCustomButtonArray()
  * 按钮 / 独立：测试连接（跳板→设备 + 写账号 + display version）。
  * @return string 'success' | 错误串
  */
-function owp_ipdelivery_TestConnection(array $params)
+function owp_provision_TestConnection(array $params)
 {
     try {
         Schema::ensureTables();
@@ -602,13 +602,13 @@ function owp_ipdelivery_TestConnection(array $params)
         }
         // 优先用写账号测（验证自动化账号可用）
         $res = $conn->testConnection(true);
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['error']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['error']);
         if ($res['ok']) {
             return 'success';
         }
         return 'Error: 连接测试失败：' . $res['error'];
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -617,7 +617,7 @@ function owp_ipdelivery_TestConnection(array $params)
  * 按钮：幂等重下配置（重跑 CreateAccount 的下发部分，复用已有分配）。
  * @return string
  */
-function owp_ipdelivery_Repush(array $params)
+function owp_provision_Repush(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -625,7 +625,7 @@ function owp_ipdelivery_Repush(array $params)
         $allocObj = Ipam::getAllocation($serviceId);
         if (!$allocObj || $allocObj->status === 'terminated') {
             // 没有分配 → 当作首次开通走完整流程
-            return owp_ipdelivery_CreateAccount($params);
+            return owp_provision_CreateAccount($params);
         }
         $alloc = (array) $allocObj;
 
@@ -636,7 +636,7 @@ function owp_ipdelivery_Repush(array $params)
 
         $conn = ipd_connection($params, ipd_alloc_device($alloc));
         $res  = $conn->runConfig($lines, $serviceId, 'Repush');
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
 
         if (!$res['dryrun'] && !$res['ok']) {
             return 'Error: 重下失败：' . $res['error'];
@@ -649,18 +649,18 @@ function owp_ipdelivery_Repush(array $params)
         }
         return 'success';
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
 
 /**
  * 按钮：显示设备上与本服务相关的现状段（display 回读）。
- * 注：AdminCustomButton 只能返回 'success'/错误串；详细回显写进 logModuleCall + mod_ipdelivery_log，
+ * 注：AdminCustomButton 只能返回 'success'/错误串；详细回显写进 logModuleCall + mod_owp_provision_log，
  *     staff 去 Utilities>Logs>Module Log 看（按钮无法直接渲染大段文本）。
  * @return string
  */
-function owp_ipdelivery_ShowConfig(array $params)
+function owp_provision_ShowConfig(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -674,10 +674,10 @@ function owp_ipdelivery_ShowConfig(array $params)
             return 'Error: 当前为 dry-run，不读取真实设备。请关闭 dry-run 后再用此按钮。';
         }
         $out = $conn->runDisplay(array_values(Templates::verifyCommands((array) $alloc)));
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $out, '见 Module Log 回显');
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $out, '见 Module Log 回显');
         return 'success'; // 回显在 Module Log
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -686,7 +686,7 @@ function owp_ipdelivery_ShowConfig(array $params)
  * 按钮：校验交付（接口 UP + 路由命中 + policy 应用）。
  * @return string
  */
-function owp_ipdelivery_VerifyDelivery(array $params)
+function owp_provision_VerifyDelivery(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -700,10 +700,10 @@ function owp_ipdelivery_VerifyDelivery(array $params)
             return 'Error: 当前为 dry-run，无法校验真实设备。';
         }
         $verify = ipd_verify_delivery($conn, (array) $alloc);
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $verify['detail'] ?? '', $verify['error']);
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $verify['detail'] ?? '', $verify['error']);
         return $verify['ok'] ? 'success' : ('Error: 校验未通过：' . $verify['error']);
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -931,12 +931,12 @@ function ipd_rollback_create(Connection $conn, array $alloc, int $serviceId): vo
             $conn->runConfig($lines, $serviceId, 'RollbackCreate');
         }
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', 'ipd_rollback_create', ['serviceid' => $serviceId], $e->getMessage(), '');
+        logModuleCall('owp_provision', 'ipd_rollback_create', ['serviceid' => $serviceId], $e->getMessage(), '');
     }
     try {
         Ipam::release($serviceId);
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', 'ipd_rollback_create:release', ['serviceid' => $serviceId], $e->getMessage(), '');
+        logModuleCall('owp_provision', 'ipd_rollback_create:release', ['serviceid' => $serviceId], $e->getMessage(), '');
     }
 }
 
@@ -955,7 +955,7 @@ function ipd_writeback_customfields(array $params, array $alloc): void
         }
         ipd_set_customfield($params, 'Tunnel/Loopback', $tun);
     } catch (\Throwable $e) {
-        logModuleCall('owp_ipdelivery', 'ipd_writeback_customfields', ['serviceid' => $params['serviceid'] ?? 0], $e->getMessage(), '');
+        logModuleCall('owp_provision', 'ipd_writeback_customfields', ['serviceid' => $params['serviceid'] ?? 0], $e->getMessage(), '');
     }
 }
 
@@ -1068,7 +1068,7 @@ function ipd_gre_client_hint(array $alloc): string
 }
 
 // 客户区 CSRF 已改用自包含一次性 nonce（$_SESSION['ipd_csrf_ca'] ↔ 表单隐藏字段 ipd_token），
-// 校验内联在 owp_ipdelivery_ClientArea() 里；旧的 ipd_check_token() 已移除。
+// 校验内联在 owp_provision_ClientArea() 里；旧的 ipd_check_token() 已移除。
 
 /**
  * 脱敏 $params 再喂给 logModuleCall（去掉可能的密码键；configoptions/customfields 保留，
@@ -1088,5 +1088,5 @@ function ipd_safe_params(array $params): array
 /** 结构化日志小工具（Module Log）。 */
 function ipd_log(string $action, array $params, string $request, string $response): void
 {
-    logModuleCall('owp_ipdelivery', $action, ipd_safe_params($params), $response, $request);
+    logModuleCall('owp_provision', $action, ipd_safe_params($params), $response, $request);
 }

@@ -1,0 +1,32 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  php-lint:
+    name: php -l (syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Lint all PHP files
+        run: |
+          status=0
+          while IFS= read -r -d '' f; do
+            if ! php -l "$f" > /dev/null 2>&1; then
+              echo "::error file=$f::PHP syntax error"
+              php -l "$f" || true
+              status=1
+            fi
+          done < <(find modules -name '*.php' -print0)
+          if [ "$status" -eq 0 ]; then echo "All PHP files passed php -l."; fi
+          exit $status

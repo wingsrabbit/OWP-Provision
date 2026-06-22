@@ -35,6 +35,8 @@ use OwpProvision\Ipam;
 use OwpProvision\Templates;
 use OwpProvision\Connection;
 use OwpProvision\Types;
+use OwpProvision\Orchestrator;
+use OwpProvision\Drivers\VrpDriver;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -49,6 +51,9 @@ require_once __DIR__ . '/lib/Ipam.php';
 require_once __DIR__ . '/lib/Resources.php';
 require_once __DIR__ . '/lib/Templates.php';
 require_once __DIR__ . '/lib/Connection.php';
+require_once __DIR__ . '/lib/Orchestrator.php';
+require_once __DIR__ . '/lib/Drivers/DriverInterface.php';
+require_once __DIR__ . '/lib/Drivers/VrpDriver.php';
 
 // ============================================================================
 // MetaData / ConfigOptions
@@ -176,79 +181,78 @@ function owp_provision_CreateAccount(array $params)
             return 'Error: 带宽档无法换算 CIR：' . $e->getMessage();
         }
 
-        // 3) 事务分配资源（从所选设备的资源池分配，写 allocation.device_id）
-        try {
-            if ($deliveryType === 'xc') {
-                $alloc = Ipam::allocateXc($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $wantPort !== '' ? $wantPort : null);
-            } else {
-                $alloc = Ipam::allocateGre($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $remoteIp);
-            }
-        } catch (\Throwable $e) {
-            ipd_log(__FUNCTION__, $params, '', '分配失败：' . $e->getMessage());
-            return 'Error: 资源分配失败：' . $e->getMessage();
-        }
-        // 幂等复用旧分配时，以记录里的 device_id 为准（连对同一台设备）
-        $deviceId = (int) ($alloc['device_id'] ?? $deviceId);
-
-        // 4) 连接（按本服务设备；dry-run 时 Connection 内部不触设备）
-        $conn   = ipd_connection($params, $deviceId);
-        $isDry  = $conn->isDryRun();
-
-        // 5) 幂等预检（非 dry-run 才真读；dry-run 跳过设备读）
-        //    预检只为日志/参考，真正幂等性靠命令本身（VRP 重复下发同配置不报错；
-        //    undo 不存在对象会报错，但 Create 路径不 undo）。
-        if (!$isDry) {
+        // 3)–9) 取全局锁串行执行（分配→连接→下发→校验→回写）；失败回滚+释放，每步落 oplog。
+        return Orchestrator::withLock(function () use ($params, $serviceId, $deliveryType, $bandwidth, $prefixSize, $remoteIp, $wantPort, $custTag, $deviceId) {
+            // 3) 事务分配资源（从所选设备的资源池分配，写 allocation.device_id）
             try {
-                $pre = $conn->runDisplay(array_values(Templates::verifyCommands($alloc)));
-                ipd_log(__FUNCTION__ . ':precheck', $params, '', $pre);
+                if ($deliveryType === 'xc') {
+                    $alloc = Ipam::allocateXc($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $wantPort !== '' ? $wantPort : null);
+                } else {
+                    $alloc = Ipam::allocateGre($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $remoteIp);
+                }
             } catch (\Throwable $e) {
-                // 预检失败不致命（可能对象本就不存在）；继续下发，由下发+校验把关。
-                ipd_log(__FUNCTION__ . ':precheck', $params, '', '预检读失败（忽略）：' . $e->getMessage());
+                Orchestrator::log($serviceId, 'create', 'allocate', $deviceId, 'failed', '', $e->getMessage());
+                ipd_log(__FUNCTION__, $params, '', '分配失败：' . $e->getMessage());
+                return 'Error: 资源分配失败：' . $e->getMessage();
             }
-        }
+            $deviceId = (int) ($alloc['device_id'] ?? $deviceId); // 幂等复用旧分配时以记录为准
+            Orchestrator::log($serviceId, 'create', 'allocate', $deviceId, 'ok', '', json_encode(
+                ['type' => $alloc['delivery_type'] ?? '', 'prefix' => $alloc['prefix'] ?? '', 'vlan' => $alloc['vlan_id'] ?? null, 'port' => $alloc['port'] ?? null],
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ));
 
-        // 6) 渲染命令块（走类型注册表的 create 方法，便于将来加类型不改此处）
-        $createMethod = $typeDef['create'];
-        $lines = Templates::$createMethod($alloc, $custTag);
+            // 4) 驱动（按本服务设备；dry-run 时不触设备）
+            $drv   = ipd_vrp($params, $deviceId);
+            $isDry = $drv->isDryRun();
 
-        // 7) 下发（含 save+Y；dry-run 只记日志）
-        $res = $conn->runConfig($lines, $serviceId, 'CreateAccount');
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+            // 5) 幂等预检（非 dry-run 才真读；失败不致命）
+            if (!$isDry) {
+                try {
+                    $pre = $drv->runDisplay(array_values(Templates::verifyCommands($alloc)));
+                    ipd_log(__FUNCTION__ . ':precheck', $params, '', $pre);
+                } catch (\Throwable $e) {
+                    ipd_log(__FUNCTION__ . ':precheck', $params, '', '预检读失败（忽略）：' . $e->getMessage());
+                }
+            }
 
-        if ($res['dryrun']) {
-            // dry-run：回写 custom fields（便于后台看分配结果），返回成功（不触设备）。
+            // 6–7) 渲染 + 下发（VrpDriver 按类型分发，含 save+Y；dry-run 只记日志）
+            $res = $drv->provision($alloc, $custTag);
+            logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+
+            if ($res['dryrun']) {
+                Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'dryrun', '', '(dry-run，仅渲染)');
+                ipd_writeback_customfields($params, $alloc);
+                return 'success';
+            }
+            if (!$res['ok']) {
+                Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'failed', '', (string) $res['error']);
+                ipd_rollback_create($drv, $alloc, $serviceId); // 尽力拆除已下发部分 + 释放分配
+                Orchestrator::log($serviceId, 'create', 'rollback', $deviceId, 'rollback', '', '已尝试拆除+释放分配');
+                return 'Error: 下发失败，已尝试回滚并释放分配：' . $res['error'];
+            }
+            Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'ok', '', 'save 成功');
+
+            // 8) 校验回读（顾问性，不作为回滚依据——客户侧多半未就绪）
+            $verify = $drv->verifyDelivery($alloc);
+            Orchestrator::log($serviceId, 'create', 'verify', $deviceId, $verify['ok'] ? 'ok' : 'failed', '', $verify['ok'] ? 'liveness OK' : (string) $verify['error']);
+            if (!$verify['ok']) {
+                logModuleCall('owp_provision', __FUNCTION__ . ':verify-advisory',
+                    ['serviceid' => $serviceId], (string) ($verify['detail'] ?? ''),
+                    '已下发并保存；liveness 暂未通过（通常因客户侧未就绪，非错误）：' . $verify['error']);
+                if (function_exists('logActivity')) {
+                    logActivity('[OWP Provision] 服务 #' . $serviceId . ' 配置已下发并保存；'
+                        . 'liveness 暂未通过（多因客户侧未就绪，可稍后 Verify 复检）：' . $verify['error']);
+                }
+            }
+
+            // 9) 回写 custom fields + 活动日志
             ipd_writeback_customfields($params, $alloc);
-            return 'success';
-        }
-        if (!$res['ok']) {
-            // 下发失败 → 尽力回滚已下发部分 + 释放分配
-            ipd_rollback_create($conn, $alloc, $serviceId);
-            return 'Error: 下发失败，已尝试回滚并释放分配：' . $res['error'];
-        }
-
-        // 8) 校验回读（顾问性，不作为回滚依据）
-        //    交付段/接口能否「活」依赖客户侧是否就绪——开通时客户多半还没配好自己那端
-        //    （XC 的 Vlanif 要成员口 up 才 up；静态路由 nexthop 不可达就不进表）。
-        //    故 liveness 不当失败：下发成功 + save 成功（runConfig 已把关）即视为开通成功；
-        //    liveness 仅记日志，管理员可在客户就绪后用后台「Verify」按钮复检。
-        $verify = ipd_verify_delivery($conn, $alloc);
-        if (!$verify['ok']) {
-            logModuleCall('owp_provision', __FUNCTION__ . ':verify-advisory',
-                ['serviceid' => $serviceId], (string) ($verify['detail'] ?? ''),
-                '已下发并保存；liveness 暂未通过（通常因客户侧未就绪，非错误）：' . $verify['error']);
             if (function_exists('logActivity')) {
-                logActivity('[IPDelivery] 服务 #' . $serviceId . ' 配置已下发并保存；'
-                    . 'liveness 暂未通过（多因客户侧未就绪，可稍后 Verify 复检）：' . $verify['error']);
+                logActivity('[OWP Provision] 服务 #' . $serviceId . ' 已开通（' . strtoupper($deliveryType)
+                    . '，prefix=' . ($alloc['prefix'] ?? '') . '）。');
             }
-        }
-
-        // 9) 回写 custom fields + 活动日志
-        ipd_writeback_customfields($params, $alloc);
-        if (function_exists('logActivity')) {
-            logActivity('[IPDelivery] 服务 #' . $serviceId . ' 已开通（' . strtoupper($deliveryType)
-                . '，prefix=' . ($alloc['prefix'] ?? '') . '）。');
-        }
-        return 'success';
+            return 'success';
+        });
 
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
@@ -270,15 +274,19 @@ function owp_provision_SuspendAccount(array $params)
             return $alloc;
         }
 
-        $conn = ipd_connection($params, ipd_alloc_device($alloc));
-        $res  = $conn->runConfig(Templates::suspend((array) $alloc), $serviceId, 'SuspendAccount');
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
-
-        if (!$res['dryrun'] && !$res['ok']) {
-            return 'Error: 暂停下发失败：' . $res['error'];
-        }
-        Ipam::setStatus($serviceId, 'suspended');
-        return 'success';
+        return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
+            $devId = ipd_alloc_device($alloc);
+            $drv   = ipd_vrp($params, $devId);
+            $res   = $drv->suspend((array) $alloc);
+            logModuleCall('owp_provision', 'SuspendAccount', ipd_safe_params($params), $res['output'], $res['block']);
+            if (!$res['dryrun'] && !$res['ok']) {
+                Orchestrator::log($serviceId, 'suspend', 'vrp.suspend', $devId, 'failed', '', (string) $res['error']);
+                return 'Error: 暂停下发失败：' . $res['error'];
+            }
+            Ipam::setStatus($serviceId, 'suspended');
+            Orchestrator::log($serviceId, 'suspend', 'vrp.suspend', $devId, $res['dryrun'] ? 'dryrun' : 'ok', '', '撤客户段静态路由');
+            return 'success';
+        });
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
@@ -299,15 +307,19 @@ function owp_provision_UnsuspendAccount(array $params)
             return $alloc;
         }
 
-        $conn = ipd_connection($params, ipd_alloc_device($alloc));
-        $res  = $conn->runConfig(Templates::unsuspend((array) $alloc), $serviceId, 'UnsuspendAccount');
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
-
-        if (!$res['dryrun'] && !$res['ok']) {
-            return 'Error: 恢复下发失败：' . $res['error'];
-        }
-        Ipam::setStatus($serviceId, 'active');
-        return 'success';
+        return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
+            $devId = ipd_alloc_device($alloc);
+            $drv   = ipd_vrp($params, $devId);
+            $res   = $drv->unsuspend((array) $alloc);
+            logModuleCall('owp_provision', 'UnsuspendAccount', ipd_safe_params($params), $res['output'], $res['block']);
+            if (!$res['dryrun'] && !$res['ok']) {
+                Orchestrator::log($serviceId, 'unsuspend', 'vrp.unsuspend', $devId, 'failed', '', (string) $res['error']);
+                return 'Error: 恢复下发失败：' . $res['error'];
+            }
+            Ipam::setStatus($serviceId, 'active');
+            Orchestrator::log($serviceId, 'unsuspend', 'vrp.unsuspend', $devId, $res['dryrun'] ? 'dryrun' : 'ok', '', '重下客户段静态路由');
+            return 'success';
+        });
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
@@ -331,34 +343,39 @@ function owp_provision_TerminateAccount(array $params)
         }
         $alloc = (array) $allocObj;
 
-        $conn  = ipd_connection($params, ipd_alloc_device($alloc));
-        $tm    = ipd_type_method($alloc, 'teardown');
-        $lines = $tm ? Templates::$tm($alloc) : [];
+        return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
+            $devId = ipd_alloc_device($alloc);
+            $drv   = ipd_vrp($params, $devId);
+            $res   = $drv->teardown($alloc);
+            logModuleCall('owp_provision', 'TerminateAccount', ipd_safe_params($params), $res['output'], $res['block']);
 
-        $res = $conn->runConfig($lines, $serviceId, 'TerminateAccount');
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+            if ($res['dryrun']) {
+                Ipam::release($serviceId);
+                Orchestrator::log($serviceId, 'terminate', 'vrp.teardown', $devId, 'dryrun', '', '(dry-run) 已释放分配');
+                return 'success';
+            }
+            if (!$res['ok']) {
+                // 拆除失败：不释放分配（避免「记录回池但设备仍有残留」），返回错误让 staff 介入。
+                Orchestrator::log($serviceId, 'terminate', 'vrp.teardown', $devId, 'failed', '', (string) $res['error']);
+                return 'Error: 拆除下发失败（资源未回池，待人工核查设备残留）：' . $res['error'];
+            }
+            Orchestrator::log($serviceId, 'terminate', 'vrp.teardown', $devId, 'ok', '', 'undo+save 成功');
 
-        if ($res['dryrun']) {
+            // 校验已清除（best-effort）：接口/路由应不再命中
+            $verify = $drv->verifyTeardown($alloc);
+            if (!$verify['ok']) {
+                // 设备可能仍有残留：保留分配记录、返回错误（不静默回池）。
+                Orchestrator::log($serviceId, 'terminate', 'verify', $devId, 'failed', '', (string) $verify['error']);
+                return 'Error: 拆除后仍检测到残留，请人工核查（资源暂不回池）：' . $verify['error'];
+            }
+
             Ipam::release($serviceId);
+            Orchestrator::log($serviceId, 'terminate', 'release', $devId, 'ok', '', '校验无残留，资源回池');
+            if (function_exists('logActivity')) {
+                logActivity('[OWP Provision] 服务 #' . $serviceId . ' 已销户拆除并回收资源。');
+            }
             return 'success';
-        }
-        if (!$res['ok']) {
-            // 拆除失败：不释放分配（避免「记录回池但设备仍有残留」），返回错误让 staff 介入。
-            return 'Error: 拆除下发失败（资源未回池，待人工核查设备残留）：' . $res['error'];
-        }
-
-        // 校验已清除（best-effort）：接口/路由应不再命中
-        $verify = ipd_verify_teardown($conn, $alloc);
-        if (!$verify['ok']) {
-            // 设备可能仍有残留：保留分配记录、返回错误（不静默回池）。
-            return 'Error: 拆除后仍检测到残留，请人工核查（资源暂不回池）：' . $verify['error'];
-        }
-
-        Ipam::release($serviceId);
-        if (function_exists('logActivity')) {
-            logActivity('[IPDelivery] 服务 #' . $serviceId . ' 已销户拆除并回收资源。');
-        }
-        return 'success';
+        });
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
@@ -413,14 +430,18 @@ function owp_provision_ChangePackage(array $params)
         if (empty($bwLines)) {
             return 'success';
         }
-        $conn = ipd_connection($params, ipd_alloc_device($alloc));
-        $res  = $conn->runConfig($bwLines, $serviceId, 'ChangePackage');
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
-
-        if (!$res['dryrun'] && !$res['ok']) {
-            return 'Error: 改带宽下发失败：' . $res['error'];
-        }
-        return 'success';
+        return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
+            $devId = ipd_alloc_device($alloc);
+            $drv   = ipd_vrp($params, $devId);
+            $res   = $drv->changeBandwidth($alloc); // XC 重下端口 qos lr；隧道返回空 = no-op
+            logModuleCall('owp_provision', 'ChangePackage', ipd_safe_params($params), $res['output'], $res['block']);
+            if (!$res['dryrun'] && !$res['ok']) {
+                Orchestrator::log($serviceId, 'change', 'vrp.changeBandwidth', $devId, 'failed', '', (string) $res['error']);
+                return 'Error: 改带宽下发失败：' . $res['error'];
+            }
+            Orchestrator::log($serviceId, 'change', 'vrp.changeBandwidth', $devId, $res['dryrun'] ? 'dryrun' : 'ok', '', '端口 qos lr 已更新');
+            return 'success';
+        });
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
@@ -524,13 +545,10 @@ function owp_provision_ClientArea(array $params)
             // 先连设备改 destination（幂等），成功再写库
             $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
             $custTag      = Templates::custTag($namingPrefix, $serviceId, ipd_client_name($params));
-            $conn         = ipd_connection($params, ipd_alloc_device($alloc));
-            $res          = $conn->runConfig(
-                Templates::greChangeRemote($alloc, $newRemote, $custTag),
-                $serviceId,
-                'ChangeRemote'
-            );
+            $drv          = ipd_vrp($params, ipd_alloc_device($alloc));
+            $res          = $drv->greChangeRemote($alloc, $newRemote, $custTag);
             logModuleCall('owp_provision', 'ClientArea:ChangeRemote', ipd_safe_params($params), $res['output'], $res['block']);
+            Orchestrator::log($serviceId, 'change', 'vrp.greChangeRemote', ipd_alloc_device($alloc), (!$res['dryrun'] && !$res['ok']) ? 'failed' : 'ok', '', $newRemote);
 
             if (!$res['dryrun'] && !$res['ok']) {
                 $vars['error'] = '改对端下发失败：' . $res['error'];
@@ -550,9 +568,9 @@ function owp_provision_ClientArea(array $params)
 
         // 查询隧道状态（只读；dry-run 也允许只读，但失败不致命）
         try {
-            $conn  = ipd_connection($params, ipd_alloc_device($alloc));
-            $out   = $conn->runDisplay('display interface Tunnel' . (int) $alloc['tunnel_id']);
-            $vars['tunnelState'] = $conn->ifaceIsUp($out) ? 'UP' : 'DOWN / 未知';
+            $drv   = ipd_vrp($params, ipd_alloc_device($alloc));
+            $out   = $drv->runDisplay('display interface Tunnel' . (int) $alloc['tunnel_id']);
+            $vars['tunnelState'] = $drv->ifaceIsUp($out) ? 'UP' : 'DOWN / 未知';
         } catch (\Throwable $e) {
             $vars['tunnelState'] = '查询失败（' . $e->getMessage() . '）';
         }
@@ -596,17 +614,10 @@ function owp_provision_TestConnection(array $params)
         if ($deviceId <= 0) {
             return 'Error: 无法确定要测试的设备（多设备且本服务尚无分配时，请到 addon「设备」页用各设备自带的 Test Connection）。';
         }
-        $conn = ipd_connection($params, $deviceId);
-        if ($conn->isDryRun()) {
-            return 'success'; // dry-run：视为「配置可读」即通过（不触设备）
-        }
-        // 优先用写账号测（验证自动化账号可用）
-        $res = $conn->testConnection(true);
+        $drv = ipd_vrp($params, $deviceId);
+        $res = $drv->testConnection(); // dry-run 内部视为通过；否则写账号 → display version
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['error']);
-        if ($res['ok']) {
-            return 'success';
-        }
-        return 'Error: 连接测试失败：' . $res['error'];
+        return $res['ok'] ? 'success' : ('Error: 连接测试失败：' . $res['error']);
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
@@ -631,23 +642,27 @@ function owp_provision_Repush(array $params)
 
         $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
         $custTag      = Templates::custTag($namingPrefix, $serviceId, ipd_client_name($params));
-        $cm    = ipd_type_method($alloc, 'create');
-        $lines = $cm ? Templates::$cm($alloc, $custTag) : [];
 
-        $conn = ipd_connection($params, ipd_alloc_device($alloc));
-        $res  = $conn->runConfig($lines, $serviceId, 'Repush');
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
-
-        if (!$res['dryrun'] && !$res['ok']) {
-            return 'Error: 重下失败：' . $res['error'];
-        }
-        if (!$res['dryrun']) {
-            $verify = ipd_verify_delivery($conn, $alloc);
-            if (!$verify['ok']) {
-                return 'Error: 重下后校验未通过：' . $verify['error'];
+        return Orchestrator::withLock(function () use ($params, $serviceId, $alloc, $custTag) {
+            $devId = ipd_alloc_device($alloc);
+            $drv   = ipd_vrp($params, $devId);
+            $res   = $drv->repush($alloc, $custTag);
+            logModuleCall('owp_provision', 'Repush', ipd_safe_params($params), $res['output'], $res['block']);
+            if (!$res['dryrun'] && !$res['ok']) {
+                Orchestrator::log($serviceId, 'repush', 'vrp.repush', $devId, 'failed', '', (string) $res['error']);
+                return 'Error: 重下失败：' . $res['error'];
             }
-        }
-        return 'success';
+            if (!$res['dryrun']) {
+                $verify = $drv->verifyDelivery($alloc);
+                Orchestrator::log($serviceId, 'repush', 'verify', $devId, $verify['ok'] ? 'ok' : 'failed', '', $verify['ok'] ? '' : (string) $verify['error']);
+                if (!$verify['ok']) {
+                    return 'Error: 重下后校验未通过：' . $verify['error'];
+                }
+            } else {
+                Orchestrator::log($serviceId, 'repush', 'vrp.repush', $devId, 'dryrun', '', '');
+            }
+            return 'success';
+        });
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
@@ -669,11 +684,11 @@ function owp_provision_ShowConfig(array $params)
         if (is_string($alloc)) {
             return $alloc;
         }
-        $conn = ipd_connection($params, ipd_alloc_device($alloc));
-        if ($conn->isDryRun()) {
+        $drv = ipd_vrp($params, ipd_alloc_device($alloc));
+        if ($drv->isDryRun()) {
             return 'Error: 当前为 dry-run，不读取真实设备。请关闭 dry-run 后再用此按钮。';
         }
-        $out = $conn->runDisplay(array_values(Templates::verifyCommands((array) $alloc)));
+        $out = $drv->runDisplay(array_values(Templates::verifyCommands((array) $alloc)));
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $out, '见 Module Log 回显');
         return 'success'; // 回显在 Module Log
     } catch (\Throwable $e) {
@@ -695,11 +710,11 @@ function owp_provision_VerifyDelivery(array $params)
         if (is_string($alloc)) {
             return $alloc;
         }
-        $conn = ipd_connection($params, ipd_alloc_device($alloc));
-        if ($conn->isDryRun()) {
+        $drv = ipd_vrp($params, ipd_alloc_device($alloc));
+        if ($drv->isDryRun()) {
             return 'Error: 当前为 dry-run，无法校验真实设备。';
         }
-        $verify = ipd_verify_delivery($conn, (array) $alloc);
+        $verify = $drv->verifyDelivery((array) $alloc);
         logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $verify['detail'] ?? '', $verify['error']);
         return $verify['ok'] ? 'success' : ('Error: 校验未通过：' . $verify['error']);
     } catch (\Throwable $e) {
@@ -713,17 +728,12 @@ function owp_provision_VerifyDelivery(array $params)
 // ============================================================================
 
 /**
- * 构造 Connection（按 **指定设备** 的连接配置 + 凭据；综合 dry-run：addon 全局 或 该产品 ConfigOptions）。
- * @throws \RuntimeException 设备不存在/未配置
+ * 构造该设备的 VrpDriver（华为 VRP 交换机驱动；内部按 device_id 取连接配置+凭据建 Connection）。
+ * dry-run 综合：addon 全局 或 该产品 ConfigOptions。设备不存在/未配置时 VrpDriver 构造抛异常。
  */
-function ipd_connection(array $params, int $deviceId): Connection
+function ipd_vrp(array $params, int $deviceId): VrpDriver
 {
-    $cfg = Devices::connConfig($deviceId);
-    if (empty($cfg)) {
-        throw new \RuntimeException('设备 #' . $deviceId . ' 不存在或未配置连接信息。请在 addon「设备」页检查。');
-    }
-    $isDry = Config::isDryRun($params);
-    return new Connection($cfg, $isDry);
+    return new VrpDriver($deviceId, Config::isDryRun($params));
 }
 
 /**
@@ -814,16 +824,6 @@ function ipd_node_to_device_id(string $node): int
 }
 
 /**
- * 取某分配对应交付类型在 Templates 上的方法名（'create' / 'teardown'）；未知类型返回 null。
- * 让开通/拆除走类型注册表分发，新增类型不改核心。
- */
-function ipd_type_method(array $alloc, string $which): ?string
-{
-    $d = Types::get((string) ($alloc['delivery_type'] ?? ''));
-    return $d[$which] ?? null;
-}
-
-/**
  * 取分配记录；无则返回可读错误串（调用方 is_string() 判断）。
  * @return \stdClass|string
  */
@@ -840,96 +840,13 @@ function ipd_alloc_or_fail(int $serviceId)
 }
 
 /**
- * 校验交付：接口 UP + 路由命中 + policy 应用。返回 ['ok'=>bool,'error'=>..,'detail'=>..]。
+ * 创建失败回滚：尽力拆除已下发部分 + 释放分配。失败只记日志（不二次抛）。
+ * 校验交付/拆除逻辑已收进 VrpDriver::verifyDelivery / verifyTeardown。
  */
-function ipd_verify_delivery(Connection $conn, array $alloc): array
-{
-    $cmds = Templates::verifyCommands($alloc);
-    $detail = [];
-    $errors = [];
-
-    try {
-        $ifaceOut = $conn->runDisplay($cmds['iface']);
-        $detail['iface'] = $ifaceOut;
-        if (!$conn->ifaceIsUp($ifaceOut)) {
-            $errors[] = '接口未 UP';
-        }
-    } catch (\Throwable $e) {
-        $errors[] = '读接口失败：' . $e->getMessage();
-    }
-
-    try {
-        $pp  = Templates::parsePrefix((string) $alloc['prefix']);
-        $net = (string) $pp['net'];
-        $routeOut = $conn->runDisplay($cmds['route']);
-        $detail['route'] = $routeOut;
-        if (!$conn->routeHit($routeOut, $net, $pp['len'])) {
-            $errors[] = '路由未进表（' . $net . '/' . $pp['len'] . '）';
-        }
-    } catch (\Throwable $e) {
-        $errors[] = '读路由失败：' . $e->getMessage();
-    }
-
-    // XC 用端口 qos lr、隧道不限速 → 不再查 traffic-policy applied-record。
-    // 校验只看接口 UP + 路由命中（liveness 在 CreateAccount 里是顾问性，不致回滚）。
-    $warnings = [];
-
-    $msg = implode('；', $errors);
-    if (!empty($warnings)) {
-        $msg .= ($msg !== '' ? '；' : '') . '[告警] ' . implode('；', $warnings);
-    }
-    return [
-        'ok'     => empty($errors),  // 仅 iface/route 计入失败；traffic-policy 仅告警
-        'error'  => $msg,
-        'detail' => json_encode($detail, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-    ];
-}
-
-/**
- * 校验拆除：接口/路由应不再命中。
- */
-function ipd_verify_teardown(Connection $conn, array $alloc): array
-{
-    $cmds   = Templates::teardownVerifyCommands($alloc);
-    $errors = [];
-
-    try {
-        $ifaceOut = $conn->runDisplay($cmds['iface']);
-        // 接口已删 → display 应报「不存在」之类；若仍 UP 视为残留。
-        if ($conn->ifaceIsUp($ifaceOut)) {
-            $errors[] = '接口仍存在/UP';
-        }
-    } catch (\Throwable $e) {
-        // 读失败可能正是因为接口已不存在；不计为错误。
-    }
-
-    try {
-        $pp       = Templates::parsePrefix((string) $alloc['prefix']);
-        $net      = (string) $pp['net'];
-        $routeOut = $conn->runDisplay($cmds['route']);
-        if ($conn->routeHit($routeOut, $net, $pp['len'])) {
-            $errors[] = '路由仍在表（' . $net . '/' . $pp['len'] . '）';
-        }
-    } catch (\Throwable $e) {
-        // 同上
-    }
-
-    return ['ok' => empty($errors), 'error' => implode('；', $errors)];
-}
-
-/**
- * 创建失败回滚：尽力拆除已下发部分 + 释放分配。失败只记日志（不要二次抛）。
- */
-function ipd_rollback_create(Connection $conn, array $alloc, int $serviceId): void
+function ipd_rollback_create(VrpDriver $drv, array $alloc, int $serviceId): void
 {
     try {
-        $tm    = ipd_type_method($alloc, 'teardown');
-        $lines = $tm ? Templates::$tm($alloc) : [];
-        // 注：teardown 里若某对象其实没建成功，undo 会报错——这是 best-effort 回滚，
-        // 忽略其报错（已在 runConfig 内识别但我们这里不据此再失败）。
-        if (!empty($lines)) {
-            $conn->runConfig($lines, $serviceId, 'RollbackCreate');
-        }
+        $drv->teardown($alloc); // VrpDriver 内部按类型渲染 undo 命令块（best-effort）
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', 'ipd_rollback_create', ['serviceid' => $serviceId], $e->getMessage(), '');
     }

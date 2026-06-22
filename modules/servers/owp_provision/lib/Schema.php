@@ -219,6 +219,7 @@ class Schema
         Capsule::schema()->create(self::T_DEVICES, function ($t) {
             $t->increments('id');
             $t->string('name', 64)->comment('设备显示名，如 Edge-A');
+            $t->string('driver', 8)->default('vrp')->comment('设备类型驱动：vrp|ros|drac');
             $t->tinyInteger('enabled')->default(1);
             $t->string('conn_mode', 8)->default('jump')->comment('direct|jump');
             $t->string('device_host', 128)->nullable();

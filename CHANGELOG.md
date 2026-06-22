@@ -9,6 +9,7 @@ v2 产品驱动重构进行中（分阶段 PR 合入）。
 
 ### 新增
 - **CI**：GitHub Actions `lint` 工作流，每次 push/PR 用 PHP 8.3 对全部 `modules/**/*.php` 跑 `php -l` 语法校验（替代本地 lint）。
+- **编排器 + 驱动层（P1）**：`Orchestrator`（全局锁**串行执行** + 按步日志 `oplog`（保留 7 天）+ **失败逐步回滚**）；`Drivers/DriverInterface` + `Drivers/VrpDriver`（把 v1 设备侧逻辑收进 VRP 驱动）。生命周期（开通/暂停/恢复/销户/改套餐/重下/改对端/各管理按钮）全改经编排器 + VrpDriver 执行、每步落 oplog。设备表加 `driver` 列（vrp|ros|drac）为多设备类型铺路。命令与流程不变（真机已验证）。
 
 ### 变更
 - **模块更名** `owp_ipdelivery` → `owp_provision`（命名空间 `OwpProvision`、表前缀 `mod_owp_provision_`、品牌 DisplayName「OWP Provision」）。新前缀视为全新安装；旧 `owp_ipdelivery` 安装不在线迁移路径内。

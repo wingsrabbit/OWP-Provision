@@ -59,6 +59,40 @@
         </tbody>
     </table>
 
+    {if $hasVpn}
+        <h4>IPMI VPN 接入 / Remote IPMI access</h4>
+        <table class="table table-striped">
+            <tbody>
+                <tr><td style="width:40%"><strong>VPN 用户名 / Username</strong></td><td><code>{$vpnUser}</code></td></tr>
+                <tr><td><strong>分配地址 / Your VPN IP</strong></td><td><code>{$vpnIp}</code></td></tr>
+                <tr><td><strong>可达 IPMI / Reachable IPMI</strong></td><td><code>{$vpnTarget}</code></td></tr>
+                <tr><td><strong>支持协议 / Protocols</strong></td><td>L2TP / PPTP / SSTP / OpenVPN / IKEv2</td></tr>
+                <tr>
+                    <td><strong>密码 / Password</strong></td>
+                    <td>
+                        {if $vpnPass}
+                            <code style="font-size:14px">{$vpnPass}</code>
+                            <div class="alert alert-warning" style="margin-top:6px;font-size:12px">⚠ 仅此一次显示，请立即保存 / Shown only once — save it now.</div>
+                        {elseif $vpnRevealed}
+                            <span style="color:#888">•••••••• （已查看过；如忘记请联系客服重置 / already viewed）</span>
+                        {else}
+                            <form method="post" action="{$modulelink}" style="display:inline">
+                                <input type="hidden" name="ipd_token" value="{$ipd_token}" />
+                                <input type="hidden" name="ipd_action" value="reveal_vpn" />
+                                <button type="submit" class="btn btn-default btn-sm"
+                                        onclick="return confirm('VPN 密码仅可查看一次，确认现在查看并保存？');">查看一次 / Reveal once</button>
+                            </form>
+                        {/if}
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="alert alert-info" style="font-size:12px">
+            连上 VPN 后仅可访问<strong>您自己的 IPMI</strong> 与<strong>公网</strong>（用于下载/安装系统），其余网络已隔离。请通过 IPMI/iDRAC 自行安装操作系统。<br>
+            Once connected you may reach only your own IPMI and the public internet; everything else is isolated.
+        </div>
+    {/if}
+
     {if $deliveryType == 'GRE'}
         <h4>您侧 GRE 配置参考 / Your-side config</h4>
         <pre style="white-space:pre-wrap;background:#f7f7f9;border:1px solid #e1e1e8;padding:10px;border-radius:4px">{$configHint}</pre>

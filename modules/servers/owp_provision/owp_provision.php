@@ -682,6 +682,13 @@ function owp_provision_ClientArea(array $params)
         'cooldownMins' => 10,
         'ipd_token'    => $ipdNewToken,   // 客户区 CSRF nonce（模板隐藏字段用）
         'modulelink'   => 'clientarea.php?action=productdetails&id=' . $serviceId,
+        // VPN（服务器形态）一次性查看
+        'hasVpn'       => false,
+        'vpnUser'      => '',
+        'vpnIp'        => '',
+        'vpnTarget'    => '',
+        'vpnRevealed'  => false,
+        'vpnPass'      => '',
     ];
 
     try {
@@ -701,9 +708,31 @@ function owp_provision_ClientArea(array $params)
         $vars['tunnelId']     = (string) ($alloc['tunnel_id'] ?? '');
         $vars['remoteIp']     = (string) ($alloc['remote_ip'] ?? '');
 
-        // 非 GRE：只读展示，不提供改对端
+        // VPN（服务器形态）：一次性查看凭据
+        $vars['vpnUser']     = (string) ($alloc['vpn_user'] ?? '');
+        $vars['vpnIp']       = (string) ($alloc['vpn_ip'] ?? '');
+        $vars['vpnTarget']   = (string) ($alloc['vpn_target'] ?? '');
+        $vars['hasVpn']      = $vars['vpnUser'] !== '';
+        $vars['vpnRevealed'] = (int) ($alloc['vpn_revealed'] ?? 0) === 1;
+        if ($vars['hasVpn'] && (($_POST['ipd_action'] ?? '') === 'reveal_vpn')) {
+            if ($ipdOldToken === '' || !hash_equals($ipdOldToken, (string) ($_POST['ipd_token'] ?? ''))) {
+                $vars['error'] = '安全校验失败（token 失效），请刷新后重试。';
+            } elseif ($vars['vpnRevealed']) {
+                $vars['message'] = 'VPN 密码已查看过（一次性）。如忘记请联系客服重置。';
+            } else {
+                $vars['vpnPass'] = Config::decrypt((string) ($alloc['vpn_pass_enc'] ?? ''));
+                Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)
+                    ->update(['vpn_revealed' => 1, 'updated_at' => date('Y-m-d H:i:s')]);
+                $vars['vpnRevealed'] = true;
+                $vars['message'] = '这是您唯一一次查看 VPN 密码，请立即妥善保存。';
+            }
+        }
+
+        // 非 GRE：只读展示（含上方 VPN 区），不提供改对端
         if (($alloc['delivery_type'] ?? '') !== 'gre') {
-            $vars['message'] = '本服务为 XC 交付，无需在客户区改对端。';
+            if (!$vars['hasVpn'] && $vars['message'] === '') {
+                $vars['message'] = '本服务为 XC 交付，无需在客户区改对端。';
+            }
             return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
         }
 

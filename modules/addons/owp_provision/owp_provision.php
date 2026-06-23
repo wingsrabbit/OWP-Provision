@@ -388,6 +388,7 @@ function owpprov_admin_device_form(string $modulelink, ?object $d): string
     $h .= owpprov_field('ros_lan_if', 'ROS 内网接口 / LAN if', $v('ros_lan_if'), 'text', 'IPMI 侧接口名，如 lan-edge');
     $h .= owpprov_field('ros_wan_if', 'ROS 公网接口 / WAN if', $v('ros_wan_if'), 'text', '如 wan-uplink');
     $h .= owpprov_field('ros_l2tp_local', 'VPN 本端地址', $v('ros_l2tp_local'), 'text', '如 10.0.0.254');
+    $h .= owpprov_field('ros_pub_host', 'VPN 公网地址(客户连)', $v('ros_pub_host'), 'text', '客户连 VPN 的公网主机名/地址，可填域名；空=回退连接 IP');
     $h .= owpprov_field('ros_ikev2_peer', 'IKEv2 peer 名(可选)', $v('ros_ikev2_peer'), 'text', '全局 IKEv2 peer；空=不开 IKEv2');
     $h .= owpprov_field('ros_ipsec_psk', 'IPsec PSK', $sec('ros_ipsec_psk'), 'password', 'L2TP/IPsec 共享密钥（加密存）');
     $h .= '</div>';
@@ -958,6 +959,7 @@ function owpprov_admin_device_fields_from_post(): array
         'ros_lan_if'    => trim((string) ($_POST['ros_lan_if'] ?? '')),
         'ros_wan_if'    => trim((string) ($_POST['ros_wan_if'] ?? '')),
         'ros_l2tp_local' => trim((string) ($_POST['ros_l2tp_local'] ?? '')),
+        'ros_pub_host'   => trim((string) ($_POST['ros_pub_host'] ?? '')),
         'ros_ikev2_peer' => trim((string) ($_POST['ros_ikev2_peer'] ?? '')),
     ];
 }

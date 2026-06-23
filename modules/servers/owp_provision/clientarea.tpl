@@ -50,6 +50,19 @@
                         {/if}
                     </td>
                 </tr>
+            {elseif $isServer}
+                <tr>
+                    <td><strong>网关 / Gateway</strong></td>
+                    <td><code>{$gateway}</code></td>
+                </tr>
+                <tr>
+                    <td><strong>子网掩码 / Netmask</strong></td>
+                    <td><code>{$netmask}</code></td>
+                </tr>
+                <tr>
+                    <td><strong>可用 IP / Usable IPs</strong></td>
+                    <td><code>{$usableRange}</code></td>
+                </tr>
             {else}
                 <tr>
                     <td><strong>PTP（我方 / 您侧）</strong></td>
@@ -58,15 +71,27 @@
             {/if}
         </tbody>
     </table>
+    {if $isServer}
+        <div class="alert alert-info" style="font-size:12px">
+            把上面任一<strong>可用 IP</strong> 配到服务器网卡，网关填 <code>{$gateway}</code>、掩码 <code>{$netmask}</code>。<br>
+            Configure one of the usable IPs on your server NIC; gateway = {$gateway}, netmask = {$netmask}.
+        </div>
+    {/if}
 
     {if $hasVpn}
         <h4>IPMI VPN 接入 / Remote IPMI access</h4>
         <table class="table table-striped">
             <tbody>
+                {if $vpnServer}
+                    <tr><td style="width:40%"><strong>VPN 服务器 / Server</strong></td><td><code>{$vpnServer}</code></td></tr>
+                {/if}
                 <tr><td style="width:40%"><strong>VPN 用户名 / Username</strong></td><td><code>{$vpnUser}</code></td></tr>
                 <tr><td><strong>分配地址 / Your VPN IP</strong></td><td><code>{$vpnIp}</code></td></tr>
                 <tr><td><strong>可达 IPMI / Reachable IPMI</strong></td><td><code>{$vpnTarget}</code></td></tr>
                 <tr><td><strong>支持协议 / Protocols</strong></td><td>L2TP / PPTP / SSTP / OpenVPN / IKEv2</td></tr>
+                {if $ipsecPsk}
+                    <tr><td><strong>IPsec 预共享密钥 / PSK</strong></td><td><code>{$ipsecPsk}</code><div style="font-size:12px;color:#888">L2TP/IPsec、IKEv2 连接时填此共享密钥</div></td></tr>
+                {/if}
                 <tr>
                     <td><strong>密码 / Password</strong></td>
                     <td>
@@ -91,6 +116,29 @@
             连上 VPN 后仅可访问<strong>您自己的 IPMI</strong> 与<strong>公网</strong>（用于下载/安装系统），其余网络已隔离。请通过 IPMI/iDRAC 自行安装操作系统。<br>
             Once connected you may reach only your own IPMI and the public internet; everything else is isolated.
         </div>
+
+        {if $idracUrl}
+            <h4>iDRAC 远程管理 / Out-of-band</h4>
+            <table class="table table-striped">
+                <tbody>
+                    <tr><td style="width:40%"><strong>iDRAC 网页 / Web</strong></td><td><a href="{$idracUrl}" target="_blank" rel="noopener"><code>{$idracUrl}</code></a>（经 VPN 访问 / via VPN）</td></tr>
+                    {if $idracBuilt}
+                        <tr><td><strong>iDRAC 用户名 / Username</strong></td><td><code>{$idracUser}</code></td></tr>
+                        <tr><td><strong>iDRAC 密码 / Password</strong></td><td>同上方 VPN 密码 / same as your VPN password</td></tr>
+                    {/if}
+                </tbody>
+            </table>
+            {if $idracBuilt}
+                <div class="alert alert-info" style="font-size:12px">
+                    连上 VPN 后，浏览器打开 <code>{$idracUrl}</code>，用上面的 iDRAC 用户名/密码登录，即可远程开关机、挂载 ISO、装系统（虚拟介质 / KVM / 电源）。<br>
+                    After connecting the VPN, open the iDRAC URL and log in with the credentials above for remote KVM / virtual media / power.
+                </div>
+            {else}
+                <div class="alert alert-warning" style="font-size:12px">
+                    iDRAC 子账号将由客服为您开通后提供；如急需请联系我们。/ Your iDRAC account will be provisioned by support — contact us if urgent.
+                </div>
+            {/if}
+        {/if}
     {/if}
 
     {if $deliveryType == 'GRE'}

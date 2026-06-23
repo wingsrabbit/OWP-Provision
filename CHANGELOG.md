@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-06-23
+
+v2.3.0 部署后对**已成功开通**的服务点 Create 重跑（补 iDRAC）时，`ros.vpn` 因 `/ppp profile` 撞名失败 → **整单回滚把在跑的交换机配置也拆了**。根因：`vpnRevoke` 漏删 profile（非幂等）。无表/列变更。
+
+### 修复
+- **`vpnRevoke` 漏删 `/ppp profile` 致重跑撞名、连锁拆服务（P0）**：`vpnGrant` 加 profile 时 `/ppp profile add name=<tag>` **不带 comment**，而 `vpnRevoke` 按 `comment` 删 → profile 残留为孤儿。任何 re-push / 重 Create / Terminate 后都留孤儿，下次 `vpnGrant` `add profile name=<tag>` 撞 `already exists` → `ros.vpn` 失败 → `create_server` 回滚（serverTeardown 拆交换机 vlan/Vlanif/qos + releaseByService）→ **把在跑的服务拆掉**。改为 `vpnRevoke` 按 **name** 删 profile（`/ppp profile remove [find name=<tag>]`，兼容现存无 comment 的孤儿），且置于 secret 删除之后（避免 profile 被 secret 引用而删不掉）。
+- **重跑不复用已分配 `vpn_ip`（P1，泄漏 + 不一致）**：`ros.vpn` 每次 `pickFreeVpnIp` 取新地址，重跑会泄漏一个并与原 ROS profile 的 remote-address 不一致。新增 `Ipam::pickOrReuseVpnIp(rosId, serviceId)`：若该服务 allocation 已有 `vpn_ip` 且仍在本 ROS 的 vpn_ip 清单、未被其它在用服务占用，则**复用**；否则取新。幂等。
+
 ## [2.3.0] - 2026-06-23
 
 v2.2.0 真机全链路真实下发成功（交换机 + ROS VPN 已落地），**唯独 iDRAC 自动建号失败**。修复经「临时 DNAT」访问 iDRAC Redfish 的两点不通（均真机实测确认，附 HTTP 状态证据）+ 误导错误。改动 ROS NAT 行为 + Redfish 请求头 → minor。无表/列变更。iDRAC 步骤仍非致命。

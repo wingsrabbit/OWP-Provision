@@ -533,9 +533,8 @@ function ipd_create_server(array $params)
         $serverSel    = ipd_pluck_co($params, ['server', 'Server', '服务器'], '');
         $custTag      = Templates::custTag($namingPrefix, $serviceId, ipd_client_name($params));
         $wantServerId = ctype_digit($serverSel) ? (int) $serverSel : 0;
-        // VPN 凭据 = WHMCS 服务自带 username/password（客户可一次性查看）
-        $vpnUser = trim((string) ($params['username'] ?? ''));
-        $vpnPass = (string) ($params['password'] ?? '');
+        // VPN 凭据 = WHMCS 服务 username/password；Other 类产品常无 username → 自动生成并存回服务（幂等，客户可一次性查看）
+        [$vpnUser, $vpnPass] = ipd_ensure_service_credentials($params);
 
         try {
             Templates::bandwidthToCirKbps($bandwidth);
@@ -558,9 +557,9 @@ function ipd_create_server(array $params)
                 JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
             ));
 
-            // 2) 在该服务器的固定端口分配并发 IP（复用 XC：vlan+vlanif+port access+qos lr+route）
+            // 2) 在该服务器的固定端口分配并发 IP（server 直连模型：vlan + Vlanif 当网关 + port access + qos lr，无 PTP/route）
             try {
-                $alloc = Ipam::allocateXc($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $port);
+                $alloc = Ipam::allocateServer($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $port);
             } catch (\Throwable $e) {
                 Orchestrator::log($serviceId, 'create_server', 'allocate', $deviceId, 'failed', '', $e->getMessage());
                 Servers::releaseByService($serviceId);
@@ -1217,6 +1216,66 @@ function ipd_client_name(array $params): string
         }
     }
     return 'cust';
+}
+
+/**
+ * 确保服务有可用的 VPN/iDRAC 凭据并返回 [username, password]（明文）。
+ *
+ * WHMCS 对「Other」类产品常只生成 password、不生成 username → 直接用 $params['username'] 会是空串，
+ * 导致 VPN/iDRAC 整段被跳过。此处：username 为空则生成确定性安全名 `svc<serviceid>`
+ * （`[a-z0-9]`，RouterOS ppp secret / iDRAC 用户名均安全）；password 为空则随机生成强密码；
+ * 二者按需**存回服务**（password 走 WHMCS 加密），使客户区「一次性查看」与后续步骤一致。
+ * **幂等**：已有的不覆盖。
+ *
+ * @return array{0:string,1:string} [username, password]（明文）
+ */
+function ipd_ensure_service_credentials(array $params): array
+{
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    $user      = trim((string) ($params['username'] ?? ''));
+    $pass      = (string) ($params['password'] ?? '');
+
+    $update = [];
+    if ($user === '') {
+        $user           = 'svc' . $serviceId;          // 确定性 + 唯一 + ppp/iDRAC 安全字符
+        $update['username'] = $user;
+    }
+    if ($pass === '') {
+        $pass = ipd_random_password(20);
+        try {
+            $enc = function_exists('localAPI')
+                ? (string) (localAPI('EncryptPassword', ['password2' => $pass])['password'] ?? '')
+                : '';
+        } catch (\Throwable $e) {
+            $enc = '';
+        }
+        if ($enc !== '') {
+            $update['password'] = $enc;               // tblhosting.password 存 WHMCS 加密串
+        }
+    }
+
+    if ($update && $serviceId > 0) {
+        try {
+            Capsule::table('tblhosting')->where('id', $serviceId)->update($update);
+        } catch (\Throwable $e) {
+            if (function_exists('logModuleCall')) {
+                logModuleCall('owp_provision', 'ensure_credentials', ['serviceid' => $serviceId], $e->getMessage(), '');
+            }
+        }
+    }
+    return [$user, $pass];
+}
+
+/** 生成强随机密码（去除易混淆字符 0/O/1/l/I）。 */
+function ipd_random_password(int $len = 20): string
+{
+    $chars = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    $max   = strlen($chars) - 1;
+    $out   = '';
+    for ($i = 0; $i < $len; $i++) {
+        $out .= $chars[random_int(0, $max)];
+    }
+    return $out;
 }
 
 /** GRE 客户侧配置提示（客户在自己设备上配 GRE 用）。 */

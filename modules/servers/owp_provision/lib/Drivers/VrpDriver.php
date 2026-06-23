@@ -72,10 +72,14 @@ class VrpDriver implements DriverInterface
     // 生命周期命令（按交付类型分发；命令块来自 Templates）
     // ----------------------------------------------------------------------
 
-    /** 类型注册表里的方法名（create/teardown）。 */
+    /** 交付类型 → Templates 方法名（create/teardown）。server 直连子网模型不在 Types 注册表里，单独映射。 */
     private function method(array $alloc, string $which): ?string
     {
-        $d = Types::get((string) ($alloc['delivery_type'] ?? ''));
+        $type = (string) ($alloc['delivery_type'] ?? '');
+        if ($type === 'server') {
+            return $which === 'teardown' ? 'serverTeardown' : 'serverCreate';
+        }
+        $d = Types::get($type);
         return $d[$which] ?? null;
     }
 
@@ -157,16 +161,18 @@ class VrpDriver implements DriverInterface
         } catch (\Throwable $e) {
             $errors[] = '读接口失败：' . $e->getMessage();
         }
-        try {
-            $pp  = Templates::parsePrefix((string) ($alloc['prefix'] ?? ''));
-            $net = (string) $pp['net'];
-            $o   = $this->conn->runDisplay($cmds['route']);
-            $detail['route'] = $o;
-            if (!$this->conn->routeHit($o, $net, $pp['len'])) {
-                $errors[] = '路由未进表（' . $net . '/' . $pp['len'] . '）';
+        if (isset($cmds['route'])) { // server 直连子网无 route-static → 不查 routeHit
+            try {
+                $pp  = Templates::parsePrefix((string) ($alloc['prefix'] ?? ''));
+                $net = (string) $pp['net'];
+                $o   = $this->conn->runDisplay($cmds['route']);
+                $detail['route'] = $o;
+                if (!$this->conn->routeHit($o, $net, $pp['len'])) {
+                    $errors[] = '路由未进表（' . $net . '/' . $pp['len'] . '）';
+                }
+            } catch (\Throwable $e) {
+                $errors[] = '读路由失败：' . $e->getMessage();
             }
-        } catch (\Throwable $e) {
-            $errors[] = '读路由失败：' . $e->getMessage();
         }
         return [
             'ok'     => empty($errors),
@@ -188,13 +194,15 @@ class VrpDriver implements DriverInterface
         } catch (\Throwable $e) {
             // 读失败常因接口已删，不计为残留
         }
-        try {
-            $pp = Templates::parsePrefix((string) ($alloc['prefix'] ?? ''));
-            $o  = $this->conn->runDisplay($cmds['route']);
-            if ($this->conn->routeHit($o, (string) $pp['net'], $pp['len'])) {
-                $errors[] = '路由仍在表（' . $pp['net'] . '/' . $pp['len'] . '）';
+        if (isset($cmds['route'])) { // server 无 route-static → 不查残留路由
+            try {
+                $pp = Templates::parsePrefix((string) ($alloc['prefix'] ?? ''));
+                $o  = $this->conn->runDisplay($cmds['route']);
+                if ($this->conn->routeHit($o, (string) $pp['net'], $pp['len'])) {
+                    $errors[] = '路由仍在表（' . $pp['net'] . '/' . $pp['len'] . '）';
+                }
+            } catch (\Throwable $e) {
             }
-        } catch (\Throwable $e) {
         }
         return ['ok' => empty($errors), 'error' => implode('；', $errors)];
     }

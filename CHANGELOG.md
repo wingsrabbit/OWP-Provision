@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-06-23
+
+产品上架后以客户视角走查发现的插件侧不合理之处：服务器交付客户区缺连接信息、无空闲机仍可下单。（后台产品描述/分组/定价/图标类由操作员处理，不在此。）
+
+### 新增
+- **devices 加 `ros_pub_host`**：ROS VPN 公网主机名/地址（客户连 VPN 用，可填域名/白标）；空则回退连接 IP（`device_host`）。addon 设备表单加该字段；v2.6.0 迁移给已装库补列。
+
+### 修复 / 改进
+- **服务器形态客户区「Manage」信息补全（P1）**：原只列交付网段/PTP/VPN 用户名密码，客户实际连不上/配不了。补：
+  - **VPN 连接端点 + IPsec PSK**：展示 VPN 服务器地址（`ros_pub_host` 或回退 `device_host`）与 IPsec 预共享密钥（`ros_ipsec_psk`，L2TP/IPsec·IKEv2 必填）。
+  - **交付网段拆解**：显示网关（`Templates::firstUsable`=Vlanif 地址）、子网掩码（点分十进制）、客户可用 IP 范围（网关后至广播前；/29 即 .2–.6、/30 即 .2、/31 按 RFC3021）。
+  - **隐藏 PTP 行**：server 形态无 PTP，客户区不再渲染「PTP（我方/您侧）」空行（XC/IP-transit 仍显示）。
+  - **iDRAC 登录说明**：`ipmi_kind=idrac` 且本服务 iDRAC 子账号已建成（oplog `drac.user=ok`）时，展示 iDRAC 网页 `https://<ipmi_ip>`（经 VPN 访问）+ 登录用同一套 VPN 用户名/密码；未建成则提示由客服开通。
+- **下单服务器库存可用性校验（P2）**：原库存售罄仍可下单付款、到 `CreateAccount` 才失败。新增 `ShoppingCartValidateProduct` hook——对 `serviceModel=server` 的本模块产品，按所选线路（best-effort 解析，解析不到则按「任意空闲机」）统计 `Servers::freeForLine`；为 0 则拦下下单并提示联系销售。IP transit 不受约束；校验自身异常不阻断下单（避免误杀）。
+
 ## [2.5.0] - 2026-06-23
 
 v2.4.0 后真机全链路干净开通（switch + VPN ✓），唯 iDRAC 仍失败——但已是 v2.3.0 改良过的真实错误 `HTTP 000`。规则对、问题在**时序**：iDRAC 临时 DNAT 规则刚下发对首个新连接尚未生效。无表/列变更，iDRAC 仍非致命。

@@ -703,6 +703,16 @@ function owp_provision_ClientArea(array $params)
         'vpnTarget'    => '',
         'vpnRevealed'  => false,
         'vpnPass'      => '',
+        // 服务器形态：连接信息补全（P1）
+        'isServer'     => false,
+        'gateway'      => '',
+        'usableRange'  => '',
+        'netmask'      => '',
+        'vpnServer'    => '',
+        'ipsecPsk'     => '',
+        'idracUrl'     => '',
+        'idracUser'    => '',
+        'idracBuilt'   => false,
     ];
 
     try {
@@ -739,6 +749,40 @@ function owp_provision_ClientArea(array $params)
                     ->update(['vpn_revealed' => 1, 'updated_at' => date('Y-m-d H:i:s')]);
                 $vars['vpnRevealed'] = true;
                 $vars['message'] = '这是您唯一一次查看 VPN 密码，请立即妥善保存。';
+            }
+        }
+
+        // 服务器形态：补全交付信息（网关/可用范围/掩码 + VPN 端点/PSK + iDRAC 登录），让非网工客户也能自配。
+        if (($alloc['delivery_type'] ?? '') === 'server') {
+            $vars['isServer'] = true;
+            try {
+                $pp  = Templates::parsePrefix((string) ($alloc['prefix'] ?? ''));
+                $net = (string) $pp['net'];
+                $len = (int) $pp['len'];
+                $vars['gateway']     = Templates::firstUsable($net, $len);
+                $vars['netmask']     = Ipam::maskLenToDotted($len);
+                $vars['usableRange'] = owpprov_usable_range($net, $len);
+            } catch (\Throwable $e) {
+            }
+            // VPN 连接端点 + IPsec PSK（来自绑定的 ROS 设备）
+            $rosId = (int) ($alloc['vpn_device_id'] ?? 0);
+            if ($rosId > 0) {
+                $rosDev = Devices::get($rosId);
+                if ($rosDev) {
+                    $pub = trim((string) ($rosDev->ros_pub_host ?? ''));
+                    $vars['vpnServer'] = $pub !== '' ? $pub : (string) ($rosDev->device_host ?? '');
+                }
+                $vars['ipsecPsk'] = Config::deviceSecret($rosId, 'ros_ipsec_psk'); // 共享密钥，可直显
+            }
+            // iDRAC 登录：仅 ipmi_kind=idrac 且本服务 iDRAC 子账号已建成（oplog drac.user=ok）时显示。
+            $srv = Servers::byService($serviceId);
+            if ($srv && (string) ($srv->ipmi_kind ?? '') === 'idrac' && !empty($srv->ipmi_ip)) {
+                $vars['idracUrl']   = 'https://' . (string) $srv->ipmi_ip;
+                $vars['idracBuilt'] = Capsule::table(Schema::T_OPLOG)
+                    ->where('serviceid', $serviceId)->where('step', 'drac.user')->where('status', 'ok')->exists();
+                if ($vars['idracBuilt']) {
+                    $vars['idracUser'] = $vars['vpnUser']; // iDRAC 子账号 = VPN 用户名/密码
+                }
             }
         }
 
@@ -1294,6 +1338,31 @@ function owpprov_random_password(int $len = 20): string
 }
 
 /** GRE 客户侧配置提示（客户在自己设备上配 GRE 用）。 */
+/**
+ * 服务器交付段的「客户可用 IP 范围」（网关之后到广播之前）。
+ * /≤30：网关=base+1 → 客户用 base+2 … 广播-1；/31：RFC3021 客户用 base+1；/32：单 IP。
+ */
+function owpprov_usable_range(string $net, int $len): string
+{
+    $base = ip2long($net);
+    if ($base === false) {
+        return '';
+    }
+    if ($len >= 32) {
+        return long2ip($base);
+    }
+    if ($len === 31) {
+        return long2ip($base + 1); // RFC3021：交换机 .0 / 客户 .1
+    }
+    $size  = 1 << (32 - $len);
+    $first = $base + 2;            // 网关 base+1，客户从 base+2 起
+    $last  = $base + $size - 2;    // 广播 base+size-1，客户到 broadcast-1
+    if ($first > $last) {
+        return long2ip($first);
+    }
+    return $first === $last ? long2ip($first) : (long2ip($first) . ' – ' . long2ip($last));
+}
+
 function owpprov_gre_client_hint(array $alloc): string
 {
     $prefix   = (string) ($alloc['prefix'] ?? '');

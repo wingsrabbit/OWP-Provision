@@ -268,3 +268,67 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 </script>
 HTML;
 });
+
+/**
+ * 下单库存可用性：server 形态产品在「无空闲服务器」时拦下下单（避免客户付款后到 CreateAccount 才失败）。
+ * 仅约束本模块、serviceModel=server 的产品；IP transit 不受约束。校验自身出错不阻断下单（避免误杀）。
+ */
+add_hook('ShoppingCartValidateProduct', 1, function ($vars) {
+    $errors = [];
+    try {
+        $pid = (int) ($vars['pid'] ?? ($_REQUEST['pid'] ?? 0));
+        if ($pid <= 0) {
+            return $errors;
+        }
+        $prod = \WHMCS\Database\Capsule::table('tblproducts')->where('id', $pid)->first();
+        if (!$prod || (string) $prod->servertype !== 'owp_provision') {
+            return $errors; // 非本模块产品
+        }
+        if (strtolower(trim((string) ($prod->configoption5 ?? ''))) !== 'server') {
+            return $errors; // 仅 server 形态受库存约束
+        }
+        require_once __DIR__ . '/lib/Schema.php';
+        require_once __DIR__ . '/lib/Servers.php';
+        \OwpProvision\Schema::ensureTables();
+        $line = owpprov_cart_line($pid);
+        if (count(\OwpProvision\Servers::freeForLine($line)) === 0) {
+            $errors[] = '当前无可用服务器' . ($line !== '' ? '（线路 ' . $line . '）' : '')
+                . '，暂时无法下单，请联系销售。/ No server currently available — please contact sales.';
+        }
+    } catch (\Throwable $e) {
+        if (function_exists('logModuleCall')) {
+            logModuleCall('owp_provision', 'ShoppingCartValidateProduct', ['pid' => $vars['pid'] ?? 0], $e->getMessage(), '');
+        }
+    }
+    return $errors;
+});
+
+/** 从购物车选中的配置项里解析 line（best-effort）；解析不到返回 ''（→ 不限线路，仅总售罄才拦）。 */
+function owpprov_cart_line(int $pid): string
+{
+    $posted = $_POST['configoption'] ?? ($_REQUEST['configoption'] ?? []);
+    if (!is_array($posted) || empty($posted)) {
+        return '';
+    }
+    try {
+        $gids = \WHMCS\Database\Capsule::table('tblproductconfiglinks')->where('pid', $pid)->pluck('gid')->all();
+        if (empty($gids)) {
+            return '';
+        }
+        $lineOptIds = \WHMCS\Database\Capsule::table('tblproductconfigoptions')
+            ->whereIn('gid', $gids)
+            ->where(function ($q) {
+                $q->where('optionname', 'like', '%line%')->orWhere('optionname', 'like', '%线路%');
+            })->pluck('id')->all();
+        foreach ($lineOptIds as $oid) {
+            if (isset($posted[$oid]) && (int) $posted[$oid] > 0) {
+                $sub = \WHMCS\Database\Capsule::table('tblproductconfigoptionssub')->where('id', (int) $posted[$oid])->first();
+                if ($sub && trim((string) $sub->optionname) !== '') {
+                    return trim((string) $sub->optionname);
+                }
+            }
+        }
+    } catch (\Throwable $e) {
+    }
+    return '';
+}

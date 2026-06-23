@@ -24,8 +24,8 @@ if (!defined('WHMCS')) {
 
 class Schema
 {
-    /** 当前 schema 版本；addon `_upgrade()` 按此迁移。v2.1.0–v2.5.0 无表/列变更（修复均复用现有结构）。 */
-    public const VERSION = '2.5.0';
+    /** 当前 schema 版本；addon `_upgrade()` 按此迁移。v2.6.0 给 devices 加 ros_pub_host（见 migrate）。 */
+    public const VERSION = '2.6.0';
 
     public const T_POOLS       = 'mod_owp_provision_pools';       // 已弃用（迁移源/回滚保留）
     public const T_RESOURCES   = 'mod_owp_provision_resources';   // 清单式 IPAM：逐条具体资源
@@ -247,6 +247,7 @@ class Schema
             $t->string('ros_wan_if', 32)->nullable()->comment('ROS 公网接口名，如 wan-uplink');
             $t->string('ros_l2tp_local', 32)->nullable()->comment('VPN 本端地址，如 10.0.0.254');
             $t->string('ros_ikev2_peer', 64)->nullable()->comment('全局 IKEv2 peer 名（一次性预置）；空=不开 IKEv2');
+            $t->string('ros_pub_host', 128)->nullable()->comment('ROS VPN 公网主机名/地址（客户连 VPN 用，可填域名/白标）；空=回退 device_host');
             $t->timestamp('created_at')->nullable();
             $t->timestamp('updated_at')->nullable();
             $t->engine = 'InnoDB';
@@ -393,6 +394,11 @@ class Schema
                 self::addColumn(self::T_ALLOCATIONS, $col, $cb);
             }
             // T_OPLOG / T_SERVERS 为 2.0 新表，已由 ensureTables() 建好。
+        }
+
+        // 2.6.0：客户区展示 ROS VPN 公网地址——devices 加 ros_pub_host（可填域名/白标，空回退 device_host）。
+        if (version_compare($fromVersion, '2.6.0', '<')) {
+            self::addColumn(self::T_DEVICES, 'ros_pub_host', function ($t) { $t->string('ros_pub_host', 128)->nullable(); });
         }
     }
 

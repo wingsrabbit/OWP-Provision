@@ -5,9 +5,9 @@
 
 ## [Unreleased]
 
-## [2.1.2] - 2026-06-23
+## [2.2.0] - 2026-06-23
 
-v2.1.1 真机首次**真实下发**（关 dry-run）暴露：VRP `save` 确认 `Y` 应答时序错导致所有真机开通失败回滚。无表/列变更。
+v2.1.1 真机首次**真实下发**（关 dry-run）暴露：VRP `save` 确认 `Y` 应答时序错导致所有真机开通失败回滚。修复改动了 VRP 传输的 save 交互（jump 改 `-tt` PTY + 分段喂 stdin、direct 改读 `[Y/N]` 再应答）并新增可配 `saveConfirmDelay`，故按 minor 发布。无表/列变更。
 
 ### 修复
 - **VRP `save` 确认 `Y` 应答时序（P0，阻断所有真机开通）**：把含 `save` 的命令块一次性喂入设备时，`save\n` 的换行会被 `[Y/N]` 当空应答吃掉、随后同块里的 `Y` 变成独立命令报 `Unrecognized command` → save 永不确认 → `saveConfirmed()` 判失败 → 回滚（dry-run 全绿、真机此步必挂；XC/GRE/server 共用，全中招）。两条传输路径都修：

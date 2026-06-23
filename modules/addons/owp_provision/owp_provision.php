@@ -50,7 +50,7 @@ require_once $ipdLibDir . '/Drivers/VrpDriver.php';
 require_once $ipdLibDir . '/Drivers/RosDriver.php';
 
 /** 资源池类型（kind）→ 友好名 + value 输入提示。顺序即页面展示顺序。 */
-function ipd_admin_pool_kinds(): array
+function owpprov_admin_pool_kinds(): array
 {
     return [
         'vlan'     => ['VLAN', '整数范围，如 1000-1100 或 100,200-210'],
@@ -153,7 +153,7 @@ function owp_provision_output($vars)
     $err        = '';
 
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
-        if (!ipd_admin_check_token()) {
+        if (!owpprov_admin_check_token()) {
             $err = '安全校验失败（token 失效），请刷新重试。';
         } else {
             try {
@@ -161,11 +161,11 @@ function owp_provision_output($vars)
                 switch ($action) {
                     // ---- 设备 ----
                     case 'device_add':
-                        $id = ipd_admin_device_add();
+                        $id = owpprov_admin_device_add();
                         $notice = '已新增设备 #' . $id . '。请确认连接配置/凭据后用 Test Connection 验证。';
                         break;
                     case 'device_save':
-                        ipd_admin_device_save((int) ($_POST['id'] ?? 0));
+                        owpprov_admin_device_save((int) ($_POST['id'] ?? 0));
                         $notice = '已保存设备配置与凭据。';
                         break;
                     case 'device_toggle':
@@ -173,19 +173,19 @@ function owp_provision_output($vars)
                         $notice = '已切换设备启用状态。';
                         break;
                     case 'device_delete':
-                        $notice = ipd_admin_device_delete((int) ($_POST['id'] ?? 0));
+                        $notice = owpprov_admin_device_delete((int) ($_POST['id'] ?? 0));
                         break;
                     case 'device_test':
-                        [$ok, $msg] = ipd_admin_device_test((int) ($_POST['id'] ?? 0));
+                        [$ok, $msg] = owpprov_admin_device_test((int) ($_POST['id'] ?? 0));
                         if ($ok) { $notice = '连接测试通过：' . $msg; } else { $err = '连接测试失败：' . $msg; }
                         break;
                     // ---- 服务器库存 ----
                     case 'server_add':
-                        $sid = ipd_admin_server_add();
+                        $sid = owpprov_admin_server_add();
                         $notice = '已新增服务器 #' . $sid . '。';
                         break;
                     case 'server_save':
-                        ipd_admin_server_save((int) ($_POST['id'] ?? 0));
+                        owpprov_admin_server_save((int) ($_POST['id'] ?? 0));
                         $notice = '已保存服务器。';
                         break;
                     case 'server_setstatus':
@@ -193,28 +193,28 @@ function owp_provision_output($vars)
                         $notice = '已更新服务器状态。';
                         break;
                     case 'server_delete':
-                        $notice = ipd_admin_server_delete((int) ($_POST['id'] ?? 0));
+                        $notice = owpprov_admin_server_delete((int) ($_POST['id'] ?? 0));
                         break;
                     // ---- 资源（清单式 IPAM）----
                     case 'res_split':
-                        $notice = ipd_admin_res_split();
+                        $notice = owpprov_admin_res_split();
                         break;
                     case 'res_add':
-                        $notice = ipd_admin_res_add();
+                        $notice = owpprov_admin_res_add();
                         break;
                     case 'res_update':
-                        $notice = ipd_admin_res_update((int) ($_POST['id'] ?? 0));
+                        $notice = owpprov_admin_res_update((int) ($_POST['id'] ?? 0));
                         break;
                     case 'res_toggle':
-                        ipd_admin_res_toggle((int) ($_POST['id'] ?? 0));
+                        owpprov_admin_res_toggle((int) ($_POST['id'] ?? 0));
                         $notice = '已切换资源启用状态。';
                         break;
                     case 'res_delete':
-                        ipd_admin_res_delete((int) ($_POST['id'] ?? 0));
+                        owpprov_admin_res_delete((int) ($_POST['id'] ?? 0));
                         $notice = '已删除资源条目。';
                         break;
                     case 'res_bulk_delete':
-                        $notice = ipd_admin_res_bulk_delete();
+                        $notice = owpprov_admin_res_bulk_delete();
                         break;
                     // ---- 分配（纠偏） ----
                     case 'alloc_release':
@@ -232,7 +232,7 @@ function owp_provision_output($vars)
         }
     }
 
-    echo ipd_admin_styles();
+    echo owpprov_admin_styles();
     if ($notice !== '') {
         echo '<div class="alert alert-success">' . htmlspecialchars($notice, ENT_QUOTES) . '</div>';
     }
@@ -240,18 +240,18 @@ function owp_provision_output($vars)
         echo '<div class="alert alert-danger">' . htmlspecialchars($err, ENT_QUOTES) . '</div>';
     }
 
-    echo ipd_admin_queue_panel($modulelink);
-    echo ipd_admin_devices_panel($modulelink);
-    echo ipd_admin_servers_panel($modulelink);
-    echo ipd_admin_resources_panel($modulelink);
-    echo ipd_admin_allocations_panel($modulelink);
+    echo owpprov_admin_queue_panel($modulelink);
+    echo owpprov_admin_devices_panel($modulelink);
+    echo owpprov_admin_servers_panel($modulelink);
+    echo owpprov_admin_resources_panel($modulelink);
+    echo owpprov_admin_allocations_panel($modulelink);
 }
 
 // ============================================================================
 // 面板：设备 / Devices
 // ============================================================================
 
-function ipd_admin_devices_panel(string $modulelink): string
+function owpprov_admin_devices_panel(string $modulelink): string
 {
     $devices = Devices::all();
     $dry     = Config::globalDryRun() ? '🟡 全局 Dry-Run 开启（不触设备）' : '';
@@ -286,20 +286,20 @@ function ipd_admin_devices_panel(string $modulelink): string
     foreach ($devices as $d) {
         $html .= '<details class="ipd-dev"><summary>编辑设备 #' . (int) $d->id . '：'
             . htmlspecialchars((string) $d->name, ENT_QUOTES) . '</summary>';
-        $html .= ipd_admin_device_form($modulelink, $d);
+        $html .= owpprov_admin_device_form($modulelink, $d);
         $html .= '<div style="margin-top:8px">'
-            . ipd_admin_mini_form($modulelink, 'device_test', ['id' => (int) $d->id], 'Test Connection（写账号→display version）', 'btn-default')
+            . owpprov_admin_mini_form($modulelink, 'device_test', ['id' => (int) $d->id], 'Test Connection（写账号→display version）', 'btn-default')
             . ' '
-            . ipd_admin_mini_form($modulelink, 'device_toggle', ['id' => (int) $d->id], (int) $d->enabled === 1 ? '停用设备' : '启用设备', 'btn-default')
+            . owpprov_admin_mini_form($modulelink, 'device_toggle', ['id' => (int) $d->id], (int) $d->enabled === 1 ? '停用设备' : '启用设备', 'btn-default')
             . ' '
-            . ipd_admin_mini_form($modulelink, 'device_delete', ['id' => (int) $d->id], '删除设备', 'btn-danger', '确认删除该设备？（有在用分配会被拒绝）')
+            . owpprov_admin_mini_form($modulelink, 'device_delete', ['id' => (int) $d->id], '删除设备', 'btn-danger', '确认删除该设备？（有在用分配会被拒绝）')
             . '</div>';
         $html .= '</details>';
     }
 
     // 新增设备
     $html .= '<details class="ipd-dev"><summary><strong>＋ 新增设备 / Add Device</strong></summary>';
-    $html .= ipd_admin_device_form($modulelink, null);
+    $html .= owpprov_admin_device_form($modulelink, null);
     $html .= '</details>';
 
     $html .= '</div>';
@@ -311,7 +311,7 @@ function ipd_admin_devices_panel(string $modulelink): string
  * 敏感字段用 password/textarea 掩码并**预填当前值**（https+admin 下可接受，保存即覆盖）；
  * 非敏感字段明文 text。
  */
-function ipd_admin_device_form(string $modulelink, ?object $d): string
+function owpprov_admin_device_form(string $modulelink, ?object $d): string
 {
     $isNew = ($d === null);
     $id    = $isNew ? 0 : (int) $d->id;
@@ -336,7 +336,7 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
 
     $url = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=' . $act;
     $h   = '<form method="post" action="' . $url . '" class="ipd-dev-form">';
-    $h  .= ipd_admin_token_field();
+    $h  .= owpprov_admin_token_field();
     $h  .= '<input type="hidden" name="action" value="' . $act . '" />';
     if (!$isNew) {
         $h .= '<input type="hidden" name="id" value="' . $id . '" />';
@@ -344,7 +344,7 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
 
     $h .= '<div class="ipd-grid">';
     // 非敏感（明文 text）
-    $h .= ipd_field('name', '名称 / Name', $v('name'), 'text', '如 Edge-A');
+    $h .= owpprov_field('name', '名称 / Name', $v('name'), 'text', '如 Edge-A');
     $h .= '<div class="ipd-f"><label>设备类型 / Driver</label><select name="driver" class="form-control">'
         . '<option value="vrp"' . $driverSel('vrp') . '>vrp（华为 VRP 交换机）</option>'
         . '<option value="ros"' . $driverSel('ros') . '>ros（MikroTik RouterOS / VPN）</option>'
@@ -354,21 +354,21 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
         . '<option value="jump"' . $modeSel('jump') . '>jump（经跳板）</option>'
         . '<option value="direct"' . $modeSel('direct') . '>direct（直连）</option>'
         . '</select></div>';
-    $h .= ipd_field('device_host', '设备 IP / Device Host', $v('device_host'), 'text', '如 192.0.2.20');
-    $h .= ipd_field('device_port', '设备端口', $v('device_port', '22'), 'text', '22');
-    $h .= ipd_field('write_user', '写账号用户名 / Write User', $v('write_user'), 'text', '最小权限自动化账号');
-    $h .= ipd_field('read_user', '读账号用户名(可选)', $v('read_user'), 'text', '留空=用写账号');
-    $h .= ipd_field('kex', 'KEX 算法(可选)', $v('kex'), 'text', 'jump 内层 ssh 用，设备旧 KEX 时填');
-    $h .= ipd_field('jump_host', '跳板主机 / Jump Host', $v('jump_host'), 'text', 'direct 模式留空');
-    $h .= ipd_field('jump_port', '跳板端口', $v('jump_port', '22'), 'text', '22');
-    $h .= ipd_field('jump_user', '跳板用户', $v('jump_user', 'root'), 'text', 'root');
-    $h .= ipd_field('jump_key_path', '跳板私钥路径(可选)', $v('jump_key_path'), 'text', '绝对路径；或下方粘贴私钥内容');
-    $h .= ipd_field('timeout', '超时(秒)', $v('timeout', '30'), 'text', '30');
+    $h .= owpprov_field('device_host', '设备 IP / Device Host', $v('device_host'), 'text', '如 192.0.2.20');
+    $h .= owpprov_field('device_port', '设备端口', $v('device_port', '22'), 'text', '22');
+    $h .= owpprov_field('write_user', '写账号用户名 / Write User', $v('write_user'), 'text', '最小权限自动化账号');
+    $h .= owpprov_field('read_user', '读账号用户名(可选)', $v('read_user'), 'text', '留空=用写账号');
+    $h .= owpprov_field('kex', 'KEX 算法(可选)', $v('kex'), 'text', 'jump 内层 ssh 用，设备旧 KEX 时填');
+    $h .= owpprov_field('jump_host', '跳板主机 / Jump Host', $v('jump_host'), 'text', 'direct 模式留空');
+    $h .= owpprov_field('jump_port', '跳板端口', $v('jump_port', '22'), 'text', '22');
+    $h .= owpprov_field('jump_user', '跳板用户', $v('jump_user', 'root'), 'text', 'root');
+    $h .= owpprov_field('jump_key_path', '跳板私钥路径(可选)', $v('jump_key_path'), 'text', '绝对路径；或下方粘贴私钥内容');
+    $h .= owpprov_field('timeout', '超时(秒)', $v('timeout', '30'), 'text', '30');
     // 敏感（password 掩码，预填当前值；保存即覆盖，清空=清除）
-    $h .= ipd_field('writePass', '写账号密码 / Write Password', $sec('writePass'), 'password', '保存即覆盖；清空=清除');
-    $h .= ipd_field('readPass', '读账号密码(可选)', $sec('readPass'), 'password', '');
-    $h .= ipd_field('jumpPass', '跳板密码(可选, jump)', $sec('jumpPass'), 'password', '');
-    $h .= ipd_field('jumpKeyPassphrase', '跳板私钥口令(可选)', $sec('jumpKeyPassphrase'), 'password', '');
+    $h .= owpprov_field('writePass', '写账号密码 / Write Password', $sec('writePass'), 'password', '保存即覆盖；清空=清除');
+    $h .= owpprov_field('readPass', '读账号密码(可选)', $sec('readPass'), 'password', '');
+    $h .= owpprov_field('jumpPass', '跳板密码(可选, jump)', $sec('jumpPass'), 'password', '');
+    $h .= owpprov_field('jumpKeyPassphrase', '跳板私钥口令(可选)', $sec('jumpKeyPassphrase'), 'password', '');
     $h .= '</div>'; // grid
 
     // 私钥内容（textarea，预填当前值）
@@ -380,11 +380,11 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
     // ROS（driver=ros）站点字段：仅 RouterOS 设备用；白标。
     $h .= '<div style="margin-top:8px;color:#31708f;font-size:12px">RouterOS（driver=ros）站点字段：</div>';
     $h .= '<div class="ipd-grid">';
-    $h .= ipd_field('ros_lan_if', 'ROS 内网接口 / LAN if', $v('ros_lan_if'), 'text', 'IPMI 侧接口名，如 lan-edge');
-    $h .= ipd_field('ros_wan_if', 'ROS 公网接口 / WAN if', $v('ros_wan_if'), 'text', '如 wan-uplink');
-    $h .= ipd_field('ros_l2tp_local', 'VPN 本端地址', $v('ros_l2tp_local'), 'text', '如 10.0.0.254');
-    $h .= ipd_field('ros_ikev2_peer', 'IKEv2 peer 名(可选)', $v('ros_ikev2_peer'), 'text', '全局 IKEv2 peer；空=不开 IKEv2');
-    $h .= ipd_field('ros_ipsec_psk', 'IPsec PSK', $sec('ros_ipsec_psk'), 'password', 'L2TP/IPsec 共享密钥（加密存）');
+    $h .= owpprov_field('ros_lan_if', 'ROS 内网接口 / LAN if', $v('ros_lan_if'), 'text', 'IPMI 侧接口名，如 lan-edge');
+    $h .= owpprov_field('ros_wan_if', 'ROS 公网接口 / WAN if', $v('ros_wan_if'), 'text', '如 wan-uplink');
+    $h .= owpprov_field('ros_l2tp_local', 'VPN 本端地址', $v('ros_l2tp_local'), 'text', '如 10.0.0.254');
+    $h .= owpprov_field('ros_ikev2_peer', 'IKEv2 peer 名(可选)', $v('ros_ikev2_peer'), 'text', '全局 IKEv2 peer；空=不开 IKEv2');
+    $h .= owpprov_field('ros_ipsec_psk', 'IPsec PSK', $sec('ros_ipsec_psk'), 'password', 'L2TP/IPsec 共享密钥（加密存）');
     $h .= '</div>';
 
     $h .= '<div style="margin-top:10px"><button class="btn btn-primary" type="submit">'
@@ -394,7 +394,7 @@ function ipd_admin_device_form(string $modulelink, ?object $d): string
 }
 
 /** 单个字段（label + input）。$type=text 明文 / password 掩码。 */
-function ipd_field(string $name, string $label, string $value, string $type = 'text', string $hint = ''): string
+function owpprov_field(string $name, string $label, string $value, string $type = 'text', string $hint = ''): string
 {
     $auto = $type === 'password' ? ' autocomplete="new-password"' : '';
     $h  = '<div class="ipd-f"><label>' . htmlspecialchars($label, ENT_QUOTES) . '</label>';
@@ -410,7 +410,7 @@ function ipd_field(string $name, string $label, string $value, string $type = 't
 // 面板：开通队列 + 步骤时间线 / Provisioning queue（读 oplog；样式来自 Claude Design）
 // ============================================================================
 
-function ipd_admin_queue_panel(string $modulelink): string
+function owpprov_admin_queue_panel(string $modulelink): string
 {
     try {
         $rows = Capsule::table(Schema::T_OPLOG)->orderByDesc('id')->limit(3000)->get();
@@ -435,7 +435,8 @@ function ipd_admin_queue_panel(string $modulelink): string
 
     $css = (string) @file_get_contents(__DIR__ . '/dashboard.css');
     $h   = '<style>' . $css . '</style>';
-    $h  .= '<div class="owp"><div class="owp-panel">';
+    // id=owp-p-queue：触发 dashboard.css 既有激活规则（.owp 无 data-tab 时显示队列面板），否则 .owp-panel 默认 display:none。
+    $h  .= '<div class="owp"><div class="owp-panel" id="owp-p-queue">';
     $h  .= '<div class="owp-sec"><span class="owp-sec__n">开通队列 / Provisioning · 步骤时间线</span>'
         . '<span class="owp-sec__n" style="color:var(--text-3)">' . count($bySvc) . ' 单 · 严格串行</span><span class="owp-rule"></span></div>';
 
@@ -462,8 +463,8 @@ function ipd_admin_queue_panel(string $modulelink): string
                 $hasRoll = true;
             }
         }
-        $client  = ipd_admin_client_label($sid);
-        $uid     = ipd_admin_service_uid($sid);
+        $client  = owpprov_admin_client_label($sid);
+        $uid     = owpprov_admin_service_uid($sid);
         $alloc   = Ipam::getAllocation($sid);
         $typeTxt = '—';
         $typeMod = 'transit';
@@ -523,7 +524,7 @@ function ipd_admin_queue_panel(string $modulelink): string
 // 面板：服务器库存 / Servers（租赁·托管）
 // ============================================================================
 
-function ipd_admin_servers_panel(string $modulelink): string
+function owpprov_admin_servers_panel(string $modulelink): string
 {
     $servers = Servers::all();
     $devById = [];
@@ -539,7 +540,7 @@ function ipd_admin_servers_panel(string $modulelink): string
     foreach ($servers as $s) {
         $occ = '';
         if ((string) $s->status === 'rented' && $s->serviceid) {
-            $uid = ipd_admin_service_uid((int) $s->serviceid);
+            $uid = owpprov_admin_service_uid((int) $s->serviceid);
             $occ = '<a class="ipd-occ" href="' . htmlspecialchars('clientsservices.php?userid=' . $uid . '&id=' . (int) $s->serviceid, ENT_QUOTES) . '" target="_blank" rel="noopener">服务 #' . (int) $s->serviceid . '</a>';
         }
         $html .= '<tr>'
@@ -550,7 +551,7 @@ function ipd_admin_servers_panel(string $modulelink): string
             . '<td><small>' . htmlspecialchars((string) ($s->ipmi_ip ?? ''), ENT_QUOTES) . '</small></td>'
             . '<td><small>' . ($s->vpn_device_id ? htmlspecialchars($devById[(int) $s->vpn_device_id] ?? ('#' . (int) $s->vpn_device_id), ENT_QUOTES) : '—') . '</small></td>'
             . '<td><small>' . htmlspecialchars((string) ($s->line ?? ''), ENT_QUOTES) . '</small></td>'
-            . '<td>' . ipd_admin_server_status_badge((string) $s->status) . '</td>'
+            . '<td>' . owpprov_admin_server_status_badge((string) $s->status) . '</td>'
             . '<td>' . ($occ !== '' ? $occ : '<small>—</small>') . '</td>'
             . '</tr>';
     }
@@ -561,24 +562,24 @@ function ipd_admin_servers_panel(string $modulelink): string
 
     foreach ($servers as $s) {
         $html .= '<details class="ipd-dev"><summary>编辑服务器 #' . (int) $s->id . '：' . htmlspecialchars((string) $s->name, ENT_QUOTES) . '</summary>';
-        $html .= ipd_admin_server_form($modulelink, $s);
+        $html .= owpprov_admin_server_form($modulelink, $s);
         $html .= '<div style="margin-top:8px">';
         if ((string) $s->status !== 'rented') {
-            $html .= ipd_admin_mini_form($modulelink, 'server_setstatus', ['id' => (int) $s->id, 'status' => (string) $s->status === 'maintenance' ? 'free' : 'maintenance'], (string) $s->status === 'maintenance' ? '设为空闲' : '设为维护', 'btn-default');
-            $html .= ' ' . ipd_admin_mini_form($modulelink, 'server_delete', ['id' => (int) $s->id], '删除', 'btn-danger', '确认删除该服务器？(租用中会被拒)');
+            $html .= owpprov_admin_mini_form($modulelink, 'server_setstatus', ['id' => (int) $s->id, 'status' => (string) $s->status === 'maintenance' ? 'free' : 'maintenance'], (string) $s->status === 'maintenance' ? '设为空闲' : '设为维护', 'btn-default');
+            $html .= ' ' . owpprov_admin_mini_form($modulelink, 'server_delete', ['id' => (int) $s->id], '删除', 'btn-danger', '确认删除该服务器？(租用中会被拒)');
         } else {
             $html .= '<small style="color:#8a6d3b">租用中：锁定（先销户释放）。</small>';
         }
         $html .= '</div></details>';
     }
 
-    $html .= '<details class="ipd-dev"><summary><strong>＋ 新增服务器 / Add Server</strong></summary>' . ipd_admin_server_form($modulelink, null) . '</details>';
+    $html .= '<details class="ipd-dev"><summary><strong>＋ 新增服务器 / Add Server</strong></summary>' . owpprov_admin_server_form($modulelink, null) . '</details>';
     $html .= '</div>';
     return $html;
 }
 
 /** 服务器编辑/新增表单。$s=null 为新增。 */
-function ipd_admin_server_form(string $modulelink, ?object $s): string
+function owpprov_admin_server_form(string $modulelink, ?object $s): string
 {
     $isNew = ($s === null);
     $id    = $isNew ? 0 : (int) $s->id;
@@ -603,26 +604,26 @@ function ipd_admin_server_form(string $modulelink, ?object $s): string
     };
 
     $url = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=' . $act;
-    $h   = '<form method="post" action="' . $url . '" class="ipd-dev-form">' . ipd_admin_token_field()
+    $h   = '<form method="post" action="' . $url . '" class="ipd-dev-form">' . owpprov_admin_token_field()
         . '<input type="hidden" name="action" value="' . $act . '" />';
     if (!$isNew) {
         $h .= '<input type="hidden" name="id" value="' . $id . '" />';
     }
     $h .= '<div class="ipd-grid">';
-    $h .= ipd_field('name', '名称 / Name', $v('name'), 'text', '如 R640-01');
+    $h .= owpprov_field('name', '名称 / Name', $v('name'), 'text', '如 R640-01');
     $h .= '<div class="ipd-f"><label>所在交换机 / Switch</label><select name="device_id" class="form-control">' . $devOpts . '</select></div>';
-    $h .= ipd_field('port', '交换机端口 / Port', $v('port'), 'text', '服务器 NIC 线缆到的口');
+    $h .= owpprov_field('port', '交换机端口 / Port', $v('port'), 'text', '服务器 NIC 线缆到的口');
     $h .= '<div class="ipd-f"><label>IPMI 所在 ROS（VPN）</label><select name="vpn_device_id" class="form-control">' . $rosOpts . '</select></div>';
-    $h .= ipd_field('ipmi_ip', 'IPMI IP', $v('ipmi_ip'), 'text', '如 192.168.0.10');
+    $h .= owpprov_field('ipmi_ip', 'IPMI IP', $v('ipmi_ip'), 'text', '如 192.168.0.10');
     $h .= '<div class="ipd-f"><label>IPMI 类型</label><select name="ipmi_kind" class="form-control">'
         . '<option value="idrac"' . $ikSel('idrac') . '>iDRAC (Dell)</option>'
         . '<option value="ilo"' . $ikSel('ilo') . '>iLO (HPE)</option>'
         . '<option value="generic"' . $ikSel('generic') . '>generic</option>'
         . '</select></div>';
-    $h .= ipd_field('line', '线路标签 / Line', $v('line'), 'text', '对应 prefix 资源 line；空=不限');
-    $h .= ipd_field('ipmi_user', 'iDRAC 管理账号 / BMC Admin User', $v('ipmi_user'), 'text', '建客户子账号用（如 root）');
+    $h .= owpprov_field('line', '线路标签 / Line', $v('line'), 'text', '对应 prefix 资源 line；空=不限');
+    $h .= owpprov_field('ipmi_user', 'iDRAC 管理账号 / BMC Admin User', $v('ipmi_user'), 'text', '建客户子账号用（如 root）');
     $ipmiPass = $id > 0 ? htmlspecialchars(Config::serverSecret($id, 'ipmi_pass'), ENT_QUOTES) : '';
-    $h .= ipd_field('ipmi_pass', 'iDRAC 管理密码 / BMC Admin Pass', $ipmiPass, 'password', '加密存；保存即覆盖，清空=清除');
+    $h .= owpprov_field('ipmi_pass', 'iDRAC 管理密码 / BMC Admin Pass', $ipmiPass, 'password', '加密存；保存即覆盖，清空=清除');
     $h .= '</div>';
     $h .= '<div class="ipd-f" style="margin-top:8px"><label>规格 / Specs</label>'
         . '<textarea name="specs" class="form-control" rows="2" placeholder="CPU/内存/盘/网卡">' . $v('specs') . '</textarea></div>';
@@ -631,14 +632,14 @@ function ipd_admin_server_form(string $modulelink, ?object $s): string
     return $h;
 }
 
-function ipd_admin_server_status_badge(string $status): string
+function owpprov_admin_server_status_badge(string $status): string
 {
     $map = ['free' => ['#3c763d', '空闲'], 'rented' => ['#8a6d3b', '租用中'], 'maintenance' => ['#777', '维护']];
     [$c, $l] = $map[$status] ?? ['#333', $status];
     return '<span style="color:' . $c . ';font-weight:bold">' . htmlspecialchars($l, ENT_QUOTES) . '</span>';
 }
 
-function ipd_admin_server_fields_from_post(): array
+function owpprov_admin_server_fields_from_post(): array
 {
     return [
         'name'          => trim((string) ($_POST['name'] ?? '')),
@@ -653,9 +654,9 @@ function ipd_admin_server_fields_from_post(): array
     ];
 }
 
-function ipd_admin_server_add(): int
+function owpprov_admin_server_add(): int
 {
-    $f = ipd_admin_server_fields_from_post();
+    $f = owpprov_admin_server_fields_from_post();
     if ($f['name'] === '' || $f['device_id'] <= 0 || $f['port'] === '') {
         throw new \RuntimeException('名称 / 交换机 / 端口 必填。');
     }
@@ -667,12 +668,12 @@ function ipd_admin_server_add(): int
     return $id;
 }
 
-function ipd_admin_server_save(int $id): void
+function owpprov_admin_server_save(int $id): void
 {
     if ($id <= 0 || !Servers::get($id)) {
         throw new \RuntimeException('服务器不存在。');
     }
-    $f = ipd_admin_server_fields_from_post();
+    $f = owpprov_admin_server_fields_from_post();
     if ($f['name'] === '' || $f['device_id'] <= 0 || $f['port'] === '') {
         throw new \RuntimeException('名称 / 交换机 / 端口 必填。');
     }
@@ -680,7 +681,7 @@ function ipd_admin_server_save(int $id): void
     Config::setServerSecret($id, 'ipmi_pass', (string) ($_POST['ipmi_pass'] ?? '')); // 保存即覆盖
 }
 
-function ipd_admin_server_delete(int $id): string
+function owpprov_admin_server_delete(int $id): string
 {
     $s = Servers::get($id);
     if (!$s) {
@@ -698,14 +699,14 @@ function ipd_admin_server_delete(int $id): string
 // 面板：资源 / Resources（清单式 IPAM：按设备 → 按类型，逐条可见，占用自动）
 // ============================================================================
 
-function ipd_admin_resources_panel(string $modulelink): string
+function owpprov_admin_resources_panel(string $modulelink): string
 {
     $devices = Devices::all();
-    $kinds   = ipd_admin_pool_kinds();
+    $kinds   = owpprov_admin_pool_kinds();
 
     $html = '<div class="ipd-card"><h3>资源 / Resources（清单式 IPAM：逐条可见、占用自动）</h3>';
     $html .= '<input type="hidden" id="ipd-modulelink" value="' . htmlspecialchars($modulelink, ENT_QUOTES) . '" />';
-    $html .= ipd_admin_bulk_js();
+    $html .= owpprov_admin_bulk_js();
     if (count($devices) === 0) {
         $html .= '<p><em>请先在上方「设备」区新增至少一台设备，再为其配置资源。</em></p></div>';
         return $html;
@@ -726,15 +727,15 @@ function ipd_admin_resources_panel(string $modulelink): string
             $body .= '<div class="ipd-kind"><h5>' . htmlspecialchars($kLabel, ENT_QUOTES)
                 . ' <code>' . $kind . '</code> <small style="color:#aaa">' . count($rows) . '</small></h5>';
             foreach ($rows as $r) {
-                $body .= ipd_admin_resource_row($modulelink, $r, Resources::occupant($r, $allocs), $isCidr);
+                $body .= owpprov_admin_resource_row($modulelink, $r, Resources::occupant($r, $allocs), $isCidr);
             }
             if (count($rows) === 0) {
                 $body .= '<div style="color:#aaa;font-size:12px;margin:2px 0 6px">（无）</div>';
             }
             if (count($rows) > 0) {
-                $body .= ipd_admin_res_bulk_bar($kind);
+                $body .= owpprov_admin_res_bulk_bar($kind);
             }
-            $body .= ipd_admin_res_forms($modulelink, $devId, $kind, $isCidr, $isInt, $kHint);
+            $body .= owpprov_admin_res_forms($modulelink, $devId, $kind, $isCidr, $isInt, $kHint);
             $body .= '</div>'; // ipd-kind
         }
         $html .= '<details class="ipd-dev"' . ($dev === $devices[0] ? ' open' : '') . '><summary>设备 #' . $devId
@@ -750,7 +751,7 @@ function ipd_admin_resources_panel(string $modulelink): string
 }
 
 /** 单条资源：空闲→行内可编辑(value/mask/enabled)+启停+删除；占用→锁定+跳客户页链接。 */
-function ipd_admin_resource_row(string $modulelink, object $r, ?object $occ, bool $isCidr): string
+function owpprov_admin_resource_row(string $modulelink, object $r, ?object $occ, bool $isCidr): string
 {
     $id      = (int) $r->id;
     $valRaw  = (string) $r->value;
@@ -761,7 +762,7 @@ function ipd_admin_resource_row(string $modulelink, object $r, ?object $occ, boo
     $h = '<div class="ipd-pool-row">';
     if ($occ !== null) {
         $sid  = (int) $occ->serviceid;
-        $uid  = ipd_admin_service_uid($sid);
+        $uid  = owpprov_admin_service_uid($sid);
         $link = 'clientsservices.php?userid=' . $uid . '&id=' . $sid;
         $h   .= '<code style="color:#999">#' . $id . '</code> <strong>' . $valDisp . '</strong> ' . $src
             . ' <a class="ipd-occ" href="' . htmlspecialchars($link, ENT_QUOTES) . '" target="_blank" rel="noopener">占用 · 服务 #' . $sid . '</a>'
@@ -771,28 +772,28 @@ function ipd_admin_resource_row(string $modulelink, object $r, ?object $occ, boo
         $checked = (int) $r->enabled === 1 ? ' checked' : '';
         $upUrl   = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=res_update';
         $h .= '<form method="post" action="' . $upUrl . '" class="form-inline" style="display:inline">'
-            . ipd_admin_token_field()
+            . owpprov_admin_token_field()
             . '<input type="hidden" name="action" value="res_update" />'
             . '<input type="hidden" name="id" value="' . $id . '" />'
             . '<code style="color:#999">#' . $id . '</code> <span class="ipd-free">空闲</span> '
             . '<input type="text" name="value" value="' . htmlspecialchars($valRaw, ENT_QUOTES) . '" class="form-control input-sm" style="width:150px;margin-right:3px" />';
         if ($isCidr) {
-            $h .= ' /' . ipd_admin_mask_select('mask', (int) $r->mask, 'width:72px');
+            $h .= ' /' . owpprov_admin_mask_select('mask', (int) $r->mask, 'width:72px');
         }
         $h .= ' ' . $src
             . ' <label class="ipd-chk" style="margin:0 6px"><input type="checkbox" name="enabled" value="1"' . $checked . '> 启用</label>'
             . '<button class="btn btn-xs btn-primary" type="submit" name="force" value="">保存</button> '
             . '<button class="btn btn-xs btn-warning" type="submit" name="force" value="1" onclick="return confirm(\'校验未通过也强制保存？会留痕。\');">⚠强制</button>'
             . '</form> ';
-        $h .= ipd_admin_mini_form($modulelink, 'res_toggle', ['id' => $id], (int) $r->enabled === 1 ? '停用' : '启用', 'btn-default');
-        $h .= ' ' . ipd_admin_mini_form($modulelink, 'res_delete', ['id' => $id], '删除', 'btn-danger', '确认删除该资源条目？');
+        $h .= owpprov_admin_mini_form($modulelink, 'res_toggle', ['id' => $id], (int) $r->enabled === 1 ? '停用' : '启用', 'btn-default');
+        $h .= ' ' . owpprov_admin_mini_form($modulelink, 'res_delete', ['id' => $id], '删除', 'btn-danger', '确认删除该资源条目？');
     }
     $h .= '</div>';
     return $h;
 }
 
 /** 某类型下的「母段切分」+「手动逐条」两个录入表单（都带 保存=校验 / ⚠强制=绕过）。 */
-function ipd_admin_res_forms(string $modulelink, int $devId, string $kind, bool $isCidr, bool $isInt, string $hint): string
+function owpprov_admin_res_forms(string $modulelink, int $devId, string $kind, bool $isCidr, bool $isInt, string $hint): string
 {
     $splitUrl = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=res_split';
     $addUrl   = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=res_add';
@@ -802,28 +803,28 @@ function ipd_admin_res_forms(string $modulelink, int $devId, string $kind, bool 
 
     // 母段切分
     $h  = '<form method="post" action="' . $splitUrl . '" class="form-inline ipd-pool-add">'
-        . ipd_admin_token_field() . '<input type="hidden" name="action" value="res_split" />' . $hidden
+        . owpprov_admin_token_field() . '<input type="hidden" name="action" value="res_split" />' . $hidden
         . '<span class="ipd-formlabel">母段切分：</span>'
         . '<input type="text" name="master" class="form-control input-sm" placeholder="' . htmlspecialchars($hint, ENT_QUOTES) . '" style="width:240px;margin-right:3px" />';
     if ($isCidr) {
-        $h .= ' 掩码 /' . ipd_admin_mask_select('split_mask', 30, 'width:72px') . ' ';
+        $h .= ' 掩码 /' . owpprov_admin_mask_select('split_mask', 30, 'width:72px') . ' ';
     }
     $h .= $forceBtns . '</form>';
 
     // 手动逐条
     $h .= '<form method="post" action="' . $addUrl . '" class="form-inline ipd-pool-add">'
-        . ipd_admin_token_field() . '<input type="hidden" name="action" value="res_add" />' . $hidden
+        . owpprov_admin_token_field() . '<input type="hidden" name="action" value="res_add" />' . $hidden
         . '<span class="ipd-formlabel">手动逐条：</span>'
         . '<input type="text" name="value" class="form-control input-sm" placeholder="' . ($isInt ? '单个整数' : ($isCidr ? 'IP/网络地址' : '单个端口名')) . '" style="width:170px;margin-right:3px" />';
     if ($isCidr) {
-        $h .= ' /' . ipd_admin_mask_select('mask', 32, 'width:72px') . ' ';
+        $h .= ' /' . owpprov_admin_mask_select('mask', 32, 'width:72px') . ' ';
     }
     $h .= $forceBtns . '</form>';
     return $h;
 }
 
 /** 掩码下拉（/8../32，覆盖 PTP/Loopback/Prefix 各场景；expand 会再校验 split<母段）。 */
-function ipd_admin_mask_select(string $name, int $selected, string $style = ''): string
+function owpprov_admin_mask_select(string $name, int $selected, string $style = ''): string
 {
     $h = '<select name="' . $name . '" class="form-control input-sm" style="display:inline-block;' . $style . '">';
     for ($m = 8; $m <= 32; $m++) {
@@ -833,7 +834,7 @@ function ipd_admin_mask_select(string $name, int $selected, string $style = ''):
 }
 
 /** serviceid → userid（占用链接用，进程内缓存）。 */
-function ipd_admin_service_uid(int $serviceId): int
+function owpprov_admin_service_uid(int $serviceId): int
 {
     static $cache = [];
     if (isset($cache[$serviceId])) {
@@ -851,7 +852,7 @@ function ipd_admin_service_uid(int $serviceId): int
 // 面板：占用总览 / Allocations（按设备 + 交付类型 分组）
 // ============================================================================
 
-function ipd_admin_allocations_panel(string $modulelink): string
+function owpprov_admin_allocations_panel(string $modulelink): string
 {
     $devices = Devices::all();
     $html  = '<div class="ipd-card"><h3>占用总览 / Allocations（按设备 + 类型）</h3>';
@@ -865,7 +866,7 @@ function ipd_admin_allocations_panel(string $modulelink): string
         $total += count($rows);
         $html .= '<h4 style="margin-top:12px">设备 #' . (int) $dev->id . '：' . htmlspecialchars((string) $dev->name, ENT_QUOTES)
             . ' <small style="color:#888">（' . count($rows) . '）</small></h4>';
-        $html .= ipd_admin_alloc_table($modulelink, $rows);
+        $html .= owpprov_admin_alloc_table($modulelink, $rows);
     }
 
     // 孤儿：device_id 不在现有设备（设备被删但仍有记录 / 迁移异常）
@@ -874,7 +875,7 @@ function ipd_admin_allocations_panel(string $modulelink): string
         ->orderByDesc('id')->limit(500)->get();
     if (count($orphans) > 0) {
         $html .= '<h4 style="margin-top:12px;color:#a94442">未知/已删除设备 <small>（' . count($orphans) . '）</small></h4>';
-        $html .= ipd_admin_alloc_table($modulelink, $orphans);
+        $html .= owpprov_admin_alloc_table($modulelink, $orphans);
     }
 
     if ($total === 0 && count($orphans) === 0) {
@@ -886,7 +887,7 @@ function ipd_admin_allocations_panel(string $modulelink): string
 }
 
 /** 渲染一张分配表（共用于各设备分组）。 */
-function ipd_admin_alloc_table(string $modulelink, $rows): string
+function owpprov_admin_alloc_table(string $modulelink, $rows): string
 {
     if (count($rows) === 0) {
         return '<div style="color:#aaa;font-size:12px;margin:2px 0 6px">（无）</div>';
@@ -896,7 +897,7 @@ function ipd_admin_alloc_table(string $modulelink, $rows): string
         . '<th>port</th><th>tunnel/loop</th><th>remote</th><th>BW</th><th>状态</th><th>操作</th>'
         . '</tr></thead><tbody>';
     foreach ($rows as $r) {
-        $client = ipd_admin_client_label((int) $r->serviceid);
+        $client = owpprov_admin_client_label((int) $r->serviceid);
         $tun = ((string) $r->delivery_type === 'gre') ? ('T' . ($r->tunnel_id ?? '') . ' / ' . ($r->loopback_ip ?? '')) : '';
         $html .= '<tr>'
             . '<td>' . (int) $r->serviceid . '</td>'
@@ -909,15 +910,15 @@ function ipd_admin_alloc_table(string $modulelink, $rows): string
             . '<td><small>' . htmlspecialchars($tun, ENT_QUOTES) . '</small></td>'
             . '<td><small>' . htmlspecialchars((string) ($r->remote_ip ?? ''), ENT_QUOTES) . '</small></td>'
             . '<td>' . htmlspecialchars((string) ($r->bandwidth ?? ''), ENT_QUOTES) . '</td>'
-            . '<td>' . ipd_admin_status_badge((string) $r->status) . '</td>'
+            . '<td>' . owpprov_admin_status_badge((string) $r->status) . '</td>'
             . '<td>';
         if ((string) $r->status !== 'terminated') {
             if ((string) $r->status === 'active') {
-                $html .= ipd_admin_mini_form($modulelink, 'alloc_setstatus', ['serviceid' => (int) $r->serviceid, 'status' => 'suspended'], '标暂停', 'btn-default');
+                $html .= owpprov_admin_mini_form($modulelink, 'alloc_setstatus', ['serviceid' => (int) $r->serviceid, 'status' => 'suspended'], '标暂停', 'btn-default');
             } else {
-                $html .= ipd_admin_mini_form($modulelink, 'alloc_setstatus', ['serviceid' => (int) $r->serviceid, 'status' => 'active'], '标激活', 'btn-default');
+                $html .= owpprov_admin_mini_form($modulelink, 'alloc_setstatus', ['serviceid' => (int) $r->serviceid, 'status' => 'active'], '标激活', 'btn-default');
             }
-            $html .= ' ' . ipd_admin_mini_form($modulelink, 'alloc_release', ['serviceid' => (int) $r->serviceid], '释放(回池)', 'btn-warning', '手动释放只改记录、不触设备。确认？');
+            $html .= ' ' . owpprov_admin_mini_form($modulelink, 'alloc_release', ['serviceid' => (int) $r->serviceid], '释放(回池)', 'btn-warning', '手动释放只改记录、不触设备。确认？');
         } else {
             $html .= '<small>—</small>';
         }
@@ -932,7 +933,7 @@ function ipd_admin_alloc_table(string $modulelink, $rows): string
 // ============================================================================
 
 /** 从 POST 取设备非敏感字段（白名单交给 Devices::sanitize 再过滤）。 */
-function ipd_admin_device_fields_from_post(): array
+function owpprov_admin_device_fields_from_post(): array
 {
     return [
         'name'          => trim((string) ($_POST['name'] ?? '')),
@@ -957,7 +958,7 @@ function ipd_admin_device_fields_from_post(): array
 }
 
 /** 保存该设备的全部敏感凭据（保存即覆盖：提交什么存什么，空=清除）。含 ROS 的 IPsec PSK。 */
-function ipd_admin_device_secrets_from_post(int $deviceId): void
+function owpprov_admin_device_secrets_from_post(int $deviceId): void
 {
     foreach (Config::SECRET_KEYS as $sk) {
         $val = (string) ($_POST[$sk] ?? '');
@@ -971,31 +972,31 @@ function ipd_admin_device_secrets_from_post(int $deviceId): void
     Config::setDeviceSecret($deviceId, 'ros_ipsec_psk', (string) ($_POST['ros_ipsec_psk'] ?? ''));
 }
 
-function ipd_admin_device_add(): int
+function owpprov_admin_device_add(): int
 {
-    $fields = ipd_admin_device_fields_from_post();
+    $fields = owpprov_admin_device_fields_from_post();
     if ($fields['name'] === '') {
         throw new \RuntimeException('设备名称不能为空。');
     }
     $id = Devices::create($fields);
-    ipd_admin_device_secrets_from_post($id);
+    owpprov_admin_device_secrets_from_post($id);
     return $id;
 }
 
-function ipd_admin_device_save(int $id): void
+function owpprov_admin_device_save(int $id): void
 {
     if ($id <= 0 || !Devices::exists($id)) {
         throw new \RuntimeException('设备不存在。');
     }
-    $fields = ipd_admin_device_fields_from_post();
+    $fields = owpprov_admin_device_fields_from_post();
     if ($fields['name'] === '') {
         throw new \RuntimeException('设备名称不能为空。');
     }
     Devices::update($id, $fields);
-    ipd_admin_device_secrets_from_post($id);
+    owpprov_admin_device_secrets_from_post($id);
 }
 
-function ipd_admin_device_delete(int $id): string
+function owpprov_admin_device_delete(int $id): string
 {
     if ($id <= 0 || !Devices::exists($id)) {
         throw new \RuntimeException('设备不存在。');
@@ -1009,7 +1010,7 @@ function ipd_admin_device_delete(int $id): string
 }
 
 /** 单设备 Test Connection（按 driver 分发：vrp=写账号 display version / ros=/system version；忽略全局 dry-run）。 */
-function ipd_admin_device_test(int $id): array
+function owpprov_admin_device_test(int $id): array
 {
     $dev = Devices::get($id);
     if (!$dev) {
@@ -1033,7 +1034,7 @@ function ipd_admin_device_test(int $id): array
 // ============================================================================
 
 /** 母段切分入清单（source=auto）。 */
-function ipd_admin_res_split(): string
+function owpprov_admin_res_split(): string
 {
     $devId     = (int) ($_POST['device_id'] ?? 0);
     $kind      = strtolower(trim((string) ($_POST['kind'] ?? '')));
@@ -1066,13 +1067,13 @@ function ipd_admin_res_split(): string
     }
     $n = Resources::addMany($devId, $kind, $r['items'], 'auto', $force ? 'forced' : null);
     if ($force) {
-        ipd_admin_log_forced('res_split', $devId, $kind, $master . ' ×' . $n);
+        owpprov_admin_log_forced('res_split', $devId, $kind, $master . ' ×' . $n);
     }
     return '已切分并入清单 ' . $n . ' 条' . ($force ? '（⚠强制，已留痕）' : '') . '。';
 }
 
 /** 手动逐条添加（source=manual）。 */
-function ipd_admin_res_add(): string
+function owpprov_admin_res_add(): string
 {
     $devId = (int) ($_POST['device_id'] ?? 0);
     $kind  = strtolower(trim((string) ($_POST['kind'] ?? '')));
@@ -1088,7 +1089,7 @@ function ipd_admin_res_add(): string
     if ($value === '') {
         throw new \RuntimeException('值不能为空。');
     }
-    $mask = ipd_admin_res_mask_from_post($kind);
+    $mask = owpprov_admin_res_mask_from_post($kind);
     if (!$force) {
         $errs = Resources::validate($devId, $kind, $value, $mask);
         if (!empty($errs)) {
@@ -1097,13 +1098,13 @@ function ipd_admin_res_add(): string
     }
     Resources::add($devId, $kind, $value, $mask, 'manual', $force ? 'forced' : null);
     if ($force) {
-        ipd_admin_log_forced('res_add', $devId, $kind, $value . ($mask !== null ? '/' . $mask : ''));
+        owpprov_admin_log_forced('res_add', $devId, $kind, $value . ($mask !== null ? '/' . $mask : ''));
     }
     return '已添加资源 ' . $value . ($mask !== null ? '/' . $mask : '') . ($force ? '（⚠强制，已留痕）' : '') . '。';
 }
 
 /** 单条编辑（value/mask/enabled）。占用中锁定。 */
-function ipd_admin_res_update(int $id): string
+function owpprov_admin_res_update(int $id): string
 {
     if ($id <= 0) {
         throw new \RuntimeException('无效资源 ID。');
@@ -1122,7 +1123,7 @@ function ipd_admin_res_update(int $id): string
     if ($value === '') {
         throw new \RuntimeException('值不能为空。');
     }
-    $mask = ipd_admin_res_mask_from_post($kind);
+    $mask = owpprov_admin_res_mask_from_post($kind);
     if (!$force) {
         $errs = Resources::validate((int) $r->device_id, $kind, $value, $mask, $id);
         if (!empty($errs)) {
@@ -1132,12 +1133,12 @@ function ipd_admin_res_update(int $id): string
     Resources::update($id, $value, $mask, $enabled);
     if ($force) {
         Capsule::table(Schema::T_RESOURCES)->where('id', $id)->update(['note' => 'forced']);
-        ipd_admin_log_forced('res_update', (int) $r->device_id, $kind, $value . ($mask !== null ? '/' . $mask : ''));
+        owpprov_admin_log_forced('res_update', (int) $r->device_id, $kind, $value . ($mask !== null ? '/' . $mask : ''));
     }
     return '已更新资源 #' . $id . ($force ? '（⚠强制，已留痕）' : '') . '。';
 }
 
-function ipd_admin_res_toggle(int $id): void
+function owpprov_admin_res_toggle(int $id): void
 {
     if ($id <= 0) {
         throw new \RuntimeException('无效资源 ID。');
@@ -1152,7 +1153,7 @@ function ipd_admin_res_toggle(int $id): void
     Resources::setEnabled($id, (int) $r->enabled !== 1);
 }
 
-function ipd_admin_res_delete(int $id): void
+function owpprov_admin_res_delete(int $id): void
 {
     if ($id <= 0) {
         throw new \RuntimeException('无效资源 ID。');
@@ -1164,7 +1165,7 @@ function ipd_admin_res_delete(int $id): void
 }
 
 /** 批量删除选中的资源条目；占用中的服务端再次校验并自动跳过、不删。 */
-function ipd_admin_res_bulk_delete(): string
+function owpprov_admin_res_bulk_delete(): string
 {
     $ids = $_POST['ids'] ?? [];
     if (!is_array($ids) || empty($ids)) {
@@ -1186,7 +1187,7 @@ function ipd_admin_res_bulk_delete(): string
 }
 
 /** 某类资源底部的批量删除控件条（全选本类空闲 + 删除选中）。 */
-function ipd_admin_res_bulk_bar(string $kind): string
+function owpprov_admin_res_bulk_bar(string $kind): string
 {
     $k = htmlspecialchars($kind, ENT_QUOTES);
     return '<div class="ipd-bulkbar">'
@@ -1196,7 +1197,7 @@ function ipd_admin_res_bulk_bar(string $kind): string
 }
 
 /** 批量删除的前端 JS（一次输出；token 从页面任一 ipd_token 字段取，避免表单嵌套）。 */
-function ipd_admin_bulk_js(): string
+function owpprov_admin_bulk_js(): string
 {
     return <<<'HTML'
 <script>
@@ -1225,7 +1226,7 @@ HTML;
 }
 
 /** CIDR 类从 POST 读 mask；其余类返回 null。 */
-function ipd_admin_res_mask_from_post(string $kind): ?int
+function owpprov_admin_res_mask_from_post(string $kind): ?int
 {
     if (!in_array($kind, Resources::CIDR_KINDS, true)) {
         return null;
@@ -1234,7 +1235,7 @@ function ipd_admin_res_mask_from_post(string $kind): ?int
 }
 
 /** 强制保存（绕过校验）留痕到活动日志，便于回溯。 */
-function ipd_admin_log_forced(string $action, int $devId, string $kind, string $detail): void
+function owpprov_admin_log_forced(string $action, int $devId, string $kind, string $detail): void
 {
     if (function_exists('logActivity')) {
         logActivity('[IPDelivery] ⚠ 强制保存资源（绕过校验）：' . $action . ' device#' . $devId . ' ' . $kind . ' ' . $detail);
@@ -1245,11 +1246,11 @@ function ipd_admin_log_forced(string $action, int $devId, string $kind, string $
 // 后台 UI 小工具 + 自包含 CSRF nonce
 // ============================================================================
 
-function ipd_admin_mini_form(string $modulelink, string $action, array $hidden, string $label, string $btnClass = 'btn-default', string $confirm = ''): string
+function owpprov_admin_mini_form(string $modulelink, string $action, array $hidden, string $label, string $btnClass = 'btn-default', string $confirm = ''): string
 {
     $url  = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=' . urlencode($action);
     $html = '<form method="post" action="' . $url . '" style="display:inline">';
-    $html .= ipd_admin_token_field();
+    $html .= owpprov_admin_token_field();
     $html .= '<input type="hidden" name="action" value="' . htmlspecialchars($action, ENT_QUOTES) . '" />';
     foreach ($hidden as $k => $v) {
         $html .= '<input type="hidden" name="' . htmlspecialchars((string) $k, ENT_QUOTES) . '" value="' . htmlspecialchars((string) $v, ENT_QUOTES) . '" />';
@@ -1263,7 +1264,7 @@ function ipd_admin_mini_form(string $modulelink, string $action, array $hidden, 
  * 自包含 CSRF token 隐藏字段（一次性 nonce）。每个请求生成一次（静态），同请求内多表单复用同值；
  * 存进 $_SESSION['ipd_csrf']。字段名 `ipd_token`。POST 处理在渲染前，故校验的是上次渲染存入的会话值。
  */
-function ipd_admin_token_field(): string
+function owpprov_admin_token_field(): string
 {
     static $t = null;
     if ($t === null) {
@@ -1274,14 +1275,14 @@ function ipd_admin_token_field(): string
 }
 
 /** 校验 nonce：提交值与会话值 hash_equals。 */
-function ipd_admin_check_token(): bool
+function owpprov_admin_check_token(): bool
 {
     $submitted = (string) ($_POST['ipd_token'] ?? '');
     $sess      = (string) ($_SESSION['ipd_csrf'] ?? '');
     return $submitted !== '' && $sess !== '' && hash_equals($sess, $submitted);
 }
 
-function ipd_admin_client_label(int $serviceId): string
+function owpprov_admin_client_label(int $serviceId): string
 {
     try {
         $svc = Capsule::table('tblhosting')->where('id', $serviceId)->first();
@@ -1299,14 +1300,14 @@ function ipd_admin_client_label(int $serviceId): string
     }
 }
 
-function ipd_admin_status_badge(string $status): string
+function owpprov_admin_status_badge(string $status): string
 {
     $map = ['active' => ['#3c763d', '激活'], 'suspended' => ['#8a6d3b', '暂停'], 'terminated' => ['#777', '已销户']];
     [$color, $label] = $map[$status] ?? ['#333', $status];
     return '<span style="color:' . $color . ';font-weight:bold">' . htmlspecialchars($label, ENT_QUOTES) . '</span>';
 }
 
-function ipd_admin_styles(): string
+function owpprov_admin_styles(): string
 {
     return '<style>
         .ipd-card{border:1px solid #e1e1e8;border-radius:6px;padding:14px 16px;margin:14px 0;background:#fff}

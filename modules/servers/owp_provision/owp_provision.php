@@ -21,7 +21,7 @@
  *
  * 🟡 编码不确定处：$params 的 configoptions/customfields **按名索引**（见 01 §A.2）；
  *    若线上呈现与假设不符，先在函数入口 logModuleCall(__FUNCTION__, var_export($params,true))
- *    落一遍真实结构再调键名。下方 ipd_pluck*() 已做多名兜底。
+ *    落一遍真实结构再调键名。下方 owpprov_pluck*() 已做多名兜底。
  *
  * @package OwpProvision
  * @target  WHMCS 9.0.4 / PHP 8.3
@@ -153,22 +153,22 @@ function owp_provision_CreateAccount(array $params)
 
         // 服务形态分流：server=租赁/托管（绑服务器+发IP+开 IPMI VPN）；否则走纯 IP 交付（XC/GRE）。
         if (strtolower((string) ($params['configoption5'] ?? 'ip_transit')) === 'server') {
-            return ipd_create_server($params);
+            return owpprov_create_server($params);
         }
 
         // 1) 读参数
-        $deliveryType = strtolower(ipd_pluck_co($params, ['delivery_type', 'Delivery Type'], ipd_default_delivery($params)));
-        $bandwidth    = ipd_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
-        $prefixSize   = ipd_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/32'));
+        $deliveryType = strtolower(owpprov_pluck_co($params, ['delivery_type', 'Delivery Type'], owpprov_default_delivery($params)));
+        $bandwidth    = owpprov_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
+        $prefixSize   = owpprov_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/32'));
         $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
-        $remoteIp     = trim(ipd_pluck_cf($params, ['Remote Endpoint IP', 'Remote IP'], ''));
-        $wantPort     = trim(ipd_pluck_cf($params, ['XC Port', 'Port'], ''));
-        $nodeSel      = ipd_pluck_co($params, ['node', 'Node', 'device', 'Device', '节点'], '');
-        $clientName   = ipd_client_name($params);
+        $remoteIp     = trim(owpprov_pluck_cf($params, ['Remote Endpoint IP', 'Remote IP'], ''));
+        $wantPort     = trim(owpprov_pluck_cf($params, ['XC Port', 'Port'], ''));
+        $nodeSel      = owpprov_pluck_co($params, ['node', 'Node', 'device', 'Device', '节点'], '');
+        $clientName   = owpprov_client_name($params);
         $custTag      = Templates::custTag($namingPrefix, $serviceId, $clientName);
 
         // 节点（设备）确定：下单所选 → 单设备免选默认。无法确定/未启用即报错。
-        $deviceId = ipd_resolve_device($params, null, $nodeSel);
+        $deviceId = owpprov_resolve_device($params, null, $nodeSel);
         if ($deviceId <= 0) {
             return 'Error: 无法确定交付节点。请在产品的 Configurable Option「node」选择一个设备，'
                 . '或在 addon「设备」页启用唯一设备（单设备时免选）。';
@@ -211,7 +211,7 @@ function owp_provision_CreateAccount(array $params)
                 }
             } catch (\Throwable $e) {
                 Orchestrator::log($serviceId, 'create', 'allocate', $deviceId, 'failed', '', $e->getMessage());
-                ipd_log(__FUNCTION__, $params, '', '分配失败：' . $e->getMessage());
+                owpprov_log(__FUNCTION__, $params, '', '分配失败：' . $e->getMessage());
                 return 'Error: 资源分配失败：' . $e->getMessage();
             }
             $deviceId = (int) ($alloc['device_id'] ?? $deviceId); // 幂等复用旧分配时以记录为准
@@ -221,31 +221,31 @@ function owp_provision_CreateAccount(array $params)
             ));
 
             // 4) 驱动（按本服务设备；dry-run 时不触设备）
-            $drv   = ipd_vrp($params, $deviceId);
+            $drv   = owpprov_vrp($params, $deviceId);
             $isDry = $drv->isDryRun();
 
             // 5) 幂等预检（非 dry-run 才真读；失败不致命）
             if (!$isDry) {
                 try {
                     $pre = $drv->runDisplay(array_values(Templates::verifyCommands($alloc)));
-                    ipd_log(__FUNCTION__ . ':precheck', $params, '', $pre);
+                    owpprov_log(__FUNCTION__ . ':precheck', $params, '', $pre);
                 } catch (\Throwable $e) {
-                    ipd_log(__FUNCTION__ . ':precheck', $params, '', '预检读失败（忽略）：' . $e->getMessage());
+                    owpprov_log(__FUNCTION__ . ':precheck', $params, '', '预检读失败（忽略）：' . $e->getMessage());
                 }
             }
 
             // 6–7) 渲染 + 下发（VrpDriver 按类型分发，含 save+Y；dry-run 只记日志）
             $res = $drv->provision($alloc, $custTag);
-            logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $res['output'], $res['block']);
 
             if ($res['dryrun']) {
                 Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'dryrun', '', '(dry-run，仅渲染)');
-                ipd_writeback_customfields($params, $alloc);
+                owpprov_writeback_customfields($params, $alloc);
                 return 'success';
             }
             if (!$res['ok']) {
                 Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'failed', '', (string) $res['error']);
-                ipd_rollback_create($drv, $alloc, $serviceId); // 尽力拆除已下发部分 + 释放分配
+                owpprov_rollback_create($drv, $alloc, $serviceId); // 尽力拆除已下发部分 + 释放分配
                 Orchestrator::log($serviceId, 'create', 'rollback', $deviceId, 'rollback', '', '已尝试拆除+释放分配');
                 return 'Error: 下发失败，已尝试回滚并释放分配：' . $res['error'];
             }
@@ -265,7 +265,7 @@ function owp_provision_CreateAccount(array $params)
             }
 
             // 9) 回写 custom fields + 活动日志
-            ipd_writeback_customfields($params, $alloc);
+            owpprov_writeback_customfields($params, $alloc);
             if (function_exists('logActivity')) {
                 logActivity('[OWP Provision] 服务 #' . $serviceId . ' 已开通（' . strtoupper($deliveryType)
                     . '，prefix=' . ($alloc['prefix'] ?? '') . '）。');
@@ -274,7 +274,7 @@ function owp_provision_CreateAccount(array $params)
         });
 
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -288,16 +288,16 @@ function owp_provision_SuspendAccount(array $params)
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
         Schema::ensureTables();
-        $alloc = ipd_alloc_or_fail($serviceId);
+        $alloc = owpprov_alloc_or_fail($serviceId);
         if (is_string($alloc)) {
             return $alloc;
         }
 
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
-            $devId = ipd_alloc_device($alloc);
-            $drv   = ipd_vrp($params, $devId);
+            $devId = owpprov_alloc_device($alloc);
+            $drv   = owpprov_vrp($params, $devId);
             $res   = $drv->suspend((array) $alloc);
-            logModuleCall('owp_provision', 'SuspendAccount', ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', 'SuspendAccount', owpprov_safe_params($params), $res['output'], $res['block']);
             if (!$res['dryrun'] && !$res['ok']) {
                 Orchestrator::log($serviceId, 'suspend', 'vrp.suspend', $devId, 'failed', '', (string) $res['error']);
                 return 'Error: 暂停下发失败：' . $res['error'];
@@ -307,7 +307,7 @@ function owp_provision_SuspendAccount(array $params)
             return 'success';
         });
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -321,16 +321,16 @@ function owp_provision_UnsuspendAccount(array $params)
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
         Schema::ensureTables();
-        $alloc = ipd_alloc_or_fail($serviceId);
+        $alloc = owpprov_alloc_or_fail($serviceId);
         if (is_string($alloc)) {
             return $alloc;
         }
 
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
-            $devId = ipd_alloc_device($alloc);
-            $drv   = ipd_vrp($params, $devId);
+            $devId = owpprov_alloc_device($alloc);
+            $drv   = owpprov_vrp($params, $devId);
             $res   = $drv->unsuspend((array) $alloc);
-            logModuleCall('owp_provision', 'UnsuspendAccount', ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', 'UnsuspendAccount', owpprov_safe_params($params), $res['output'], $res['block']);
             if (!$res['dryrun'] && !$res['ok']) {
                 Orchestrator::log($serviceId, 'unsuspend', 'vrp.unsuspend', $devId, 'failed', '', (string) $res['error']);
                 return 'Error: 恢复下发失败：' . $res['error'];
@@ -340,7 +340,7 @@ function owp_provision_UnsuspendAccount(array $params)
             return 'success';
         });
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -363,10 +363,10 @@ function owp_provision_TerminateAccount(array $params)
         $alloc = (array) $allocObj;
 
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
-            $devId = ipd_alloc_device($alloc);
-            $drv   = ipd_vrp($params, $devId);
+            $devId = owpprov_alloc_device($alloc);
+            $drv   = owpprov_vrp($params, $devId);
             $res   = $drv->teardown($alloc);
-            logModuleCall('owp_provision', 'TerminateAccount', ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', 'TerminateAccount', owpprov_safe_params($params), $res['output'], $res['block']);
 
             if ($res['dryrun']) {
                 Ipam::release($serviceId);
@@ -401,7 +401,7 @@ function owp_provision_TerminateAccount(array $params)
                     $rosDev  = Devices::get($rosId);
                     $rosHost = $rosDev ? (string) $rosDev->device_host : '';
                     $pubPort = (int) Config::get('dnatPortBase', '20000') + $serviceId;
-                    $ros2    = ipd_ros($params, $rosId);
+                    $ros2    = owpprov_ros($params, $rosId);
                     try {
                         $ros2->dnatOpen($serviceId, (string) $srv->ipmi_ip, 443, $msrc, $pubPort);
                         (new DracDriver('https://' . $rosHost . ':' . $pubPort, $iu, $ip, Config::isDryRun($params)))->deleteUser($vu);
@@ -415,7 +415,7 @@ function owp_provision_TerminateAccount(array $params)
             }
             if ($rosId > 0) {
                 try {
-                    $ros = ipd_ros($params, $rosId);
+                    $ros = owpprov_ros($params, $rosId);
                     $ros->vpnRevoke($serviceId);
                     $ros->dnatClose($serviceId);
                     Orchestrator::log($serviceId, 'terminate', 'ros.vpn_revoke', $rosId, 'ok', '', '已撤 VPN + 管理 DNAT');
@@ -436,7 +436,7 @@ function owp_provision_TerminateAccount(array $params)
             return 'success';
         });
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -451,14 +451,14 @@ function owp_provision_ChangePackage(array $params)
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
         Schema::ensureTables();
-        $alloc = ipd_alloc_or_fail($serviceId);
+        $alloc = owpprov_alloc_or_fail($serviceId);
         if (is_string($alloc)) {
             return $alloc;
         }
         $alloc = (array) $alloc;
 
-        $newBw   = ipd_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($alloc['bandwidth'] ?? ''));
-        $newSize = ipd_pluck_co($params, ['prefix_size', 'Prefix Size'], '');
+        $newBw   = owpprov_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($alloc['bandwidth'] ?? ''));
+        $newSize = owpprov_pluck_co($params, ['prefix_size', 'Prefix Size'], '');
 
         // 掩码变化 → 不自动处理（保护性）
         if ($newSize !== '' && $alloc['prefix']) {
@@ -490,10 +490,10 @@ function owp_provision_ChangePackage(array $params)
             return 'success';
         }
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
-            $devId = ipd_alloc_device($alloc);
-            $drv   = ipd_vrp($params, $devId);
+            $devId = owpprov_alloc_device($alloc);
+            $drv   = owpprov_vrp($params, $devId);
             $res   = $drv->changeBandwidth($alloc); // XC 重下端口 qos lr；隧道返回空 = no-op
-            logModuleCall('owp_provision', 'ChangePackage', ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', 'ChangePackage', owpprov_safe_params($params), $res['output'], $res['block']);
             if (!$res['dryrun'] && !$res['ok']) {
                 Orchestrator::log($serviceId, 'change', 'vrp.changeBandwidth', $devId, 'failed', '', (string) $res['error']);
                 return 'Error: 改带宽下发失败：' . $res['error'];
@@ -502,7 +502,7 @@ function owp_provision_ChangePackage(array $params)
             return 'success';
         });
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -518,7 +518,7 @@ function owp_provision_ChangePackage(array $params)
  *
  * @return string 'success' | 错误串
  */
-function ipd_create_server(array $params)
+function owpprov_create_server(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
@@ -526,15 +526,15 @@ function ipd_create_server(array $params)
             return 'Error: 缺少 serviceid。';
         }
         // 读参数
-        $bandwidth    = ipd_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
-        $prefixSize   = ipd_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/29'));
+        $bandwidth    = owpprov_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
+        $prefixSize   = owpprov_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/29'));
         $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
-        $line         = ipd_pluck_co($params, ['line', 'Line', '线路'], '');
-        $serverSel    = ipd_pluck_co($params, ['server', 'Server', '服务器'], '');
-        $custTag      = Templates::custTag($namingPrefix, $serviceId, ipd_client_name($params));
+        $line         = owpprov_pluck_co($params, ['line', 'Line', '线路'], '');
+        $serverSel    = owpprov_pluck_co($params, ['server', 'Server', '服务器'], '');
+        $custTag      = Templates::custTag($namingPrefix, $serviceId, owpprov_client_name($params));
         $wantServerId = ctype_digit($serverSel) ? (int) $serverSel : 0;
         // VPN 凭据 = WHMCS 服务 username/password；Other 类产品常无 username → 自动生成并存回服务（幂等，客户可一次性查看）
-        [$vpnUser, $vpnPass] = ipd_ensure_service_credentials($params);
+        [$vpnUser, $vpnPass] = owpprov_ensure_service_credentials($params);
 
         try {
             Templates::bandwidthToCirKbps($bandwidth);
@@ -569,12 +569,12 @@ function ipd_create_server(array $params)
             Orchestrator::log($serviceId, 'create_server', 'allocate', $deviceId, 'ok', '', (string) ($alloc['prefix'] ?? ''));
 
             // 3) 交换机下发
-            $drv = ipd_vrp($params, $deviceId);
+            $drv = owpprov_vrp($params, $deviceId);
             $res = $drv->provision($alloc, $custTag);
-            logModuleCall('owp_provision', 'CreateServer', ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', 'CreateServer', owpprov_safe_params($params), $res['output'], $res['block']);
             if (!$res['dryrun'] && !$res['ok']) {
                 Orchestrator::log($serviceId, 'create_server', 'vrp.provision', $deviceId, 'failed', '', (string) $res['error']);
-                ipd_rollback_create($drv, $alloc, $serviceId);
+                owpprov_rollback_create($drv, $alloc, $serviceId);
                 Servers::releaseByService($serviceId);
                 return 'Error: 交换机下发失败，已回滚：' . $res['error'];
             }
@@ -585,7 +585,7 @@ function ipd_create_server(array $params)
             if ($rosId > 0 && !empty($srv->ipmi_ip) && $vpnUser !== '') {
                 try {
                     $vpnIp = Ipam::pickFreeVpnIp($rosId);
-                    ipd_ros($params, $rosId)->vpnGrant($serviceId, $vpnIp, (string) $srv->ipmi_ip, $vpnUser, $vpnPass);
+                    owpprov_ros($params, $rosId)->vpnGrant($serviceId, $vpnIp, (string) $srv->ipmi_ip, $vpnUser, $vpnPass);
                     Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)->update([
                         'vpn_device_id' => $rosId,
                         'vpn_ip'        => $vpnIp,
@@ -597,8 +597,8 @@ function ipd_create_server(array $params)
                     Orchestrator::log($serviceId, 'create_server', 'ros.vpn', $rosId, $res['dryrun'] ? 'dryrun' : 'ok', '', $vpnIp . ' → ' . $srv->ipmi_ip);
                 } catch (\Throwable $e) {
                     Orchestrator::log($serviceId, 'create_server', 'ros.vpn', $rosId, 'failed', '', $e->getMessage());
-                    try { ipd_ros($params, $rosId)->vpnRevoke($serviceId); } catch (\Throwable $re) {}
-                    ipd_rollback_create($drv, $alloc, $serviceId);
+                    try { owpprov_ros($params, $rosId)->vpnRevoke($serviceId); } catch (\Throwable $re) {}
+                    owpprov_rollback_create($drv, $alloc, $serviceId);
                     Servers::releaseByService($serviceId);
                     return 'Error: IPMI VPN 开通失败，已回滚：' . $e->getMessage();
                 }
@@ -616,7 +616,7 @@ function ipd_create_server(array $params)
                 $rosDev  = Devices::get($rosId);
                 $rosHost = $rosDev ? (string) $rosDev->device_host : '';
                 $pubPort = $portBase + $serviceId;
-                $ros     = ipd_ros($params, $rosId);
+                $ros     = owpprov_ros($params, $rosId);
                 try {
                     $ros->dnatOpen($serviceId, (string) $srv->ipmi_ip, 443, $mgmtSrc, $pubPort);
                     $drac = new DracDriver('https://' . $rosHost . ':' . $pubPort, $ipmiUser, $ipmiPass, Config::isDryRun($params));
@@ -632,15 +632,15 @@ function ipd_create_server(array $params)
             }
 
             // 5) 回写 + 活动日志
-            ipd_writeback_customfields($params, $alloc);
-            ipd_set_customfield($params, 'Server', (string) ($srv->name ?? ''));
+            owpprov_writeback_customfields($params, $alloc);
+            owpprov_set_customfield($params, 'Server', (string) ($srv->name ?? ''));
             if (function_exists('logActivity')) {
                 logActivity('[OWP Provision] 服务 #' . $serviceId . ' 服务器开通（' . ($srv->name ?? '') . '，prefix=' . ($alloc['prefix'] ?? '') . '）。');
             }
             return 'success';
         });
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', 'ipd_create_server', ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', 'owpprov_create_server', owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -736,7 +736,7 @@ function owp_provision_ClientArea(array $params)
         }
 
         // 客户侧 GRE 配置提示（在客户自己设备上配）
-        $vars['configHint'] = ipd_gre_client_hint($alloc);
+        $vars['configHint'] = owpprov_gre_client_hint($alloc);
 
         // 处理 POST：改对端
         $action = $_POST['ipd_action'] ?? $_REQUEST['ipd_action'] ?? '';
@@ -770,11 +770,11 @@ function owp_provision_ClientArea(array $params)
 
             // 先连设备改 destination（幂等），成功再写库
             $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
-            $custTag      = Templates::custTag($namingPrefix, $serviceId, ipd_client_name($params));
-            $drv          = ipd_vrp($params, ipd_alloc_device($alloc));
+            $custTag      = Templates::custTag($namingPrefix, $serviceId, owpprov_client_name($params));
+            $drv          = owpprov_vrp($params, owpprov_alloc_device($alloc));
             $res          = $drv->greChangeRemote($alloc, $newRemote, $custTag);
-            logModuleCall('owp_provision', 'ClientArea:ChangeRemote', ipd_safe_params($params), $res['output'], $res['block']);
-            Orchestrator::log($serviceId, 'change', 'vrp.greChangeRemote', ipd_alloc_device($alloc), (!$res['dryrun'] && !$res['ok']) ? 'failed' : 'ok', '', $newRemote);
+            logModuleCall('owp_provision', 'ClientArea:ChangeRemote', owpprov_safe_params($params), $res['output'], $res['block']);
+            Orchestrator::log($serviceId, 'change', 'vrp.greChangeRemote', owpprov_alloc_device($alloc), (!$res['dryrun'] && !$res['ok']) ? 'failed' : 'ok', '', $newRemote);
 
             if (!$res['dryrun'] && !$res['ok']) {
                 $vars['error'] = '改对端下发失败：' . $res['error'];
@@ -783,7 +783,7 @@ function owp_provision_ClientArea(array $params)
 
             // 写库 + 回写 custom field
             Ipam::updateRemoteIp($serviceId, $newRemote);
-            ipd_set_customfield($params, 'Remote Endpoint IP', $newRemote);
+            owpprov_set_customfield($params, 'Remote Endpoint IP', $newRemote);
             if (function_exists('logActivity')) {
                 logActivity('[IPDelivery] 服务 #' . $serviceId . ' 客户区改 GRE 对端：'
                     . $vars['remoteIp'] . ' → ' . $newRemote . '。', (int) ($params['userid'] ?? 0));
@@ -794,7 +794,7 @@ function owp_provision_ClientArea(array $params)
 
         // 查询隧道状态（只读；dry-run 也允许只读，但失败不致命）
         try {
-            $drv   = ipd_vrp($params, ipd_alloc_device($alloc));
+            $drv   = owpprov_vrp($params, owpprov_alloc_device($alloc));
             $out   = $drv->runDisplay('display interface Tunnel' . (int) $alloc['tunnel_id']);
             $vars['tunnelState'] = $drv->ifaceIsUp($out) ? 'UP' : 'DOWN / 未知';
         } catch (\Throwable $e) {
@@ -804,7 +804,7 @@ function owp_provision_ClientArea(array $params)
         return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
 
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         $vars['error'] = '客户区出错：' . $e->getMessage();
         return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
     }
@@ -836,16 +836,16 @@ function owp_provision_TestConnection(array $params)
 {
     try {
         Schema::ensureTables();
-        $deviceId = ipd_resolve_device($params, null, '');
+        $deviceId = owpprov_resolve_device($params, null, '');
         if ($deviceId <= 0) {
             return 'Error: 无法确定要测试的设备（多设备且本服务尚无分配时，请到 addon「设备」页用各设备自带的 Test Connection）。';
         }
-        $drv = ipd_vrp($params, $deviceId);
+        $drv = owpprov_vrp($params, $deviceId);
         $res = $drv->testConnection(); // dry-run 内部视为通过；否则写账号 → display version
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $res['output'], $res['error']);
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $res['output'], $res['error']);
         return $res['ok'] ? 'success' : ('Error: 连接测试失败：' . $res['error']);
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -867,13 +867,13 @@ function owp_provision_Repush(array $params)
         $alloc = (array) $allocObj;
 
         $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
-        $custTag      = Templates::custTag($namingPrefix, $serviceId, ipd_client_name($params));
+        $custTag      = Templates::custTag($namingPrefix, $serviceId, owpprov_client_name($params));
 
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc, $custTag) {
-            $devId = ipd_alloc_device($alloc);
-            $drv   = ipd_vrp($params, $devId);
+            $devId = owpprov_alloc_device($alloc);
+            $drv   = owpprov_vrp($params, $devId);
             $res   = $drv->repush($alloc, $custTag);
-            logModuleCall('owp_provision', 'Repush', ipd_safe_params($params), $res['output'], $res['block']);
+            logModuleCall('owp_provision', 'Repush', owpprov_safe_params($params), $res['output'], $res['block']);
             if (!$res['dryrun'] && !$res['ok']) {
                 Orchestrator::log($serviceId, 'repush', 'vrp.repush', $devId, 'failed', '', (string) $res['error']);
                 return 'Error: 重下失败：' . $res['error'];
@@ -890,7 +890,7 @@ function owp_provision_Repush(array $params)
             return 'success';
         });
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -906,19 +906,19 @@ function owp_provision_ShowConfig(array $params)
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
         Schema::ensureTables();
-        $alloc = ipd_alloc_or_fail($serviceId);
+        $alloc = owpprov_alloc_or_fail($serviceId);
         if (is_string($alloc)) {
             return $alloc;
         }
-        $drv = ipd_vrp($params, ipd_alloc_device($alloc));
+        $drv = owpprov_vrp($params, owpprov_alloc_device($alloc));
         if ($drv->isDryRun()) {
             return 'Error: 当前为 dry-run，不读取真实设备。请关闭 dry-run 后再用此按钮。';
         }
         $out = $drv->runDisplay(array_values(Templates::verifyCommands((array) $alloc)));
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $out, '见 Module Log 回显');
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $out, '见 Module Log 回显');
         return 'success'; // 回显在 Module Log
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -932,19 +932,19 @@ function owp_provision_VerifyDelivery(array $params)
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
         Schema::ensureTables();
-        $alloc = ipd_alloc_or_fail($serviceId);
+        $alloc = owpprov_alloc_or_fail($serviceId);
         if (is_string($alloc)) {
             return $alloc;
         }
-        $drv = ipd_vrp($params, ipd_alloc_device($alloc));
+        $drv = owpprov_vrp($params, owpprov_alloc_device($alloc));
         if ($drv->isDryRun()) {
             return 'Error: 当前为 dry-run，无法校验真实设备。';
         }
         $verify = $drv->verifyDelivery((array) $alloc);
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $verify['detail'] ?? '', $verify['error']);
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $verify['detail'] ?? '', $verify['error']);
         return $verify['ok'] ? 'success' : ('Error: 校验未通过：' . $verify['error']);
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', __FUNCTION__, ipd_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
         return 'Error: ' . $e->getMessage();
     }
 }
@@ -957,13 +957,13 @@ function owp_provision_VerifyDelivery(array $params)
  * 构造该设备的 VrpDriver（华为 VRP 交换机驱动；内部按 device_id 取连接配置+凭据建 Connection）。
  * dry-run 综合：addon 全局 或 该产品 ConfigOptions。设备不存在/未配置时 VrpDriver 构造抛异常。
  */
-function ipd_vrp(array $params, int $deviceId): VrpDriver
+function owpprov_vrp(array $params, int $deviceId): VrpDriver
 {
     return new VrpDriver($deviceId, Config::isDryRun($params));
 }
 
 /** 构造某 ROS 设备的 RosDriver（VPN/iDRAC 通道用）。 */
-function ipd_ros(array $params, int $deviceId): RosDriver
+function owpprov_ros(array $params, int $deviceId): RosDriver
 {
     return new RosDriver($deviceId, Config::isDryRun($params));
 }
@@ -973,7 +973,7 @@ function ipd_ros(array $params, int $deviceId): RosDriver
  * 用于按设备类型分发（Test Connection、P3 服务器租赁蓝图编排）。
  * @return \OwpProvision\Drivers\DriverInterface
  */
-function ipd_driver(int $deviceId, bool $dryRun)
+function owpprov_driver(int $deviceId, bool $dryRun)
 {
     $dev    = Devices::get($deviceId);
     $driver = $dev ? strtolower((string) ($dev->driver ?? 'vrp')) : 'vrp';
@@ -998,7 +998,7 @@ function ipd_driver(int $deviceId, bool $dryRun)
  * @param array|object|null  $alloc   已知分配（可空）
  * @param string             $nodeSel 下单所选节点值（可空）
  */
-function ipd_resolve_device(array $params, $alloc = null, string $nodeSel = ''): int
+function owpprov_resolve_device(array $params, $alloc = null, string $nodeSel = ''): int
 {
     // 1) 已知分配
     if ($alloc !== null) {
@@ -1016,7 +1016,7 @@ function ipd_resolve_device(array $params, $alloc = null, string $nodeSel = ''):
         }
     }
     // 3) 下单所选节点
-    $devId = ipd_node_to_device_id($nodeSel);
+    $devId = owpprov_node_to_device_id($nodeSel);
     if ($devId > 0) {
         return $devId;
     }
@@ -1029,7 +1029,7 @@ function ipd_resolve_device(array $params, $alloc = null, string $nodeSel = ''):
  * 取某分配应连的设备 id（生命周期函数用）：记录里的 device_id，缺失则回退默认设备，再兜底 1。
  * @param array|object $alloc
  */
-function ipd_alloc_device($alloc): int
+function owpprov_alloc_device($alloc): int
 {
     $d = (int) (is_array($alloc) ? ($alloc['device_id'] ?? 0) : ($alloc->device_id ?? 0));
     if ($d > 0) {
@@ -1043,7 +1043,7 @@ function ipd_alloc_device($alloc): int
  * 把下单节点选项值映射成设备 id。接受：纯数字 id / `dev{id}` / `{id}|label` / `{id}:label` /
  * 设备名（启用设备里不区分大小写匹配）。匹配不到返回 0。
  */
-function ipd_node_to_device_id(string $node): int
+function owpprov_node_to_device_id(string $node): int
 {
     $node = trim($node);
     if ($node === '') {
@@ -1077,7 +1077,7 @@ function ipd_node_to_device_id(string $node): int
  * 取分配记录；无则返回可读错误串（调用方 is_string() 判断）。
  * @return \stdClass|string
  */
-function ipd_alloc_or_fail(int $serviceId)
+function owpprov_alloc_or_fail(int $serviceId)
 {
     if ($serviceId <= 0) {
         return 'Error: 缺少 serviceid。';
@@ -1093,36 +1093,36 @@ function ipd_alloc_or_fail(int $serviceId)
  * 创建失败回滚：尽力拆除已下发部分 + 释放分配。失败只记日志（不二次抛）。
  * 校验交付/拆除逻辑已收进 VrpDriver::verifyDelivery / verifyTeardown。
  */
-function ipd_rollback_create(VrpDriver $drv, array $alloc, int $serviceId): void
+function owpprov_rollback_create(VrpDriver $drv, array $alloc, int $serviceId): void
 {
     try {
         $drv->teardown($alloc); // VrpDriver 内部按类型渲染 undo 命令块（best-effort）
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', 'ipd_rollback_create', ['serviceid' => $serviceId], $e->getMessage(), '');
+        logModuleCall('owp_provision', 'owpprov_rollback_create', ['serviceid' => $serviceId], $e->getMessage(), '');
     }
     try {
         Ipam::release($serviceId);
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', 'ipd_rollback_create:release', ['serviceid' => $serviceId], $e->getMessage(), '');
+        logModuleCall('owp_provision', 'owpprov_rollback_create:release', ['serviceid' => $serviceId], $e->getMessage(), '');
     }
 }
 
 /**
  * 回写 custom fields（VLAN/PTP/Prefix/Tunnel/Loopback；管理员只读，权威仍在 allocations）。
  */
-function ipd_writeback_customfields(array $params, array $alloc): void
+function owpprov_writeback_customfields(array $params, array $alloc): void
 {
     try {
-        ipd_set_customfield($params, 'Allocated VLAN', (string) ($alloc['vlan_id'] ?? ''));
-        ipd_set_customfield($params, 'PTP', trim(((string) ($alloc['ptp_our'] ?? '')) . ' / ' . ((string) ($alloc['ptp_peer'] ?? '')), ' /'));
-        ipd_set_customfield($params, 'Delivered Prefix', (string) ($alloc['prefix'] ?? ''));
+        owpprov_set_customfield($params, 'Allocated VLAN', (string) ($alloc['vlan_id'] ?? ''));
+        owpprov_set_customfield($params, 'PTP', trim(((string) ($alloc['ptp_our'] ?? '')) . ' / ' . ((string) ($alloc['ptp_peer'] ?? '')), ' /'));
+        owpprov_set_customfield($params, 'Delivered Prefix', (string) ($alloc['prefix'] ?? ''));
         $tun = '';
         if (($alloc['delivery_type'] ?? '') === 'gre') {
             $tun = 'Tunnel' . ($alloc['tunnel_id'] ?? '') . ' / Loop ' . ($alloc['loopback_ip'] ?? '');
         }
-        ipd_set_customfield($params, 'Tunnel/Loopback', $tun);
+        owpprov_set_customfield($params, 'Tunnel/Loopback', $tun);
     } catch (\Throwable $e) {
-        logModuleCall('owp_provision', 'ipd_writeback_customfields', ['serviceid' => $params['serviceid'] ?? 0], $e->getMessage(), '');
+        logModuleCall('owp_provision', 'owpprov_writeback_customfields', ['serviceid' => $params['serviceid'] ?? 0], $e->getMessage(), '');
     }
 }
 
@@ -1130,7 +1130,7 @@ function ipd_writeback_customfields(array $params, array $alloc): void
  * 写一个 custom field 值（按字段名找该产品的 tblcustomfields.id，再 upsert tblcustomfieldsvalues）。
  * 字段不存在则静默跳过（管理员可能没建全回写字段）。
  */
-function ipd_set_customfield(array $params, string $fieldName, string $value): void
+function owpprov_set_customfield(array $params, string $fieldName, string $value): void
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     $pid       = (int) ($params['pid'] ?? 0);
@@ -1165,7 +1165,7 @@ function ipd_set_customfield(array $params, string $fieldName, string $value): v
 /**
  * 从 configoptions（按名）取值；多名兜底；缺省回退 $default。
  */
-function ipd_pluck_co(array $params, array $names, string $default): string
+function owpprov_pluck_co(array $params, array $names, string $default): string
 {
     if (isset($params['configoptions']) && is_array($params['configoptions'])) {
         foreach ($names as $n) {
@@ -1180,7 +1180,7 @@ function ipd_pluck_co(array $params, array $names, string $default): string
 /**
  * 从 customfields（按名）取值；多名兜底；缺省回退 $default。
  */
-function ipd_pluck_cf(array $params, array $names, string $default): string
+function owpprov_pluck_cf(array $params, array $names, string $default): string
 {
     if (isset($params['customfields']) && is_array($params['customfields'])) {
         foreach ($names as $n) {
@@ -1196,13 +1196,13 @@ function ipd_pluck_cf(array $params, array $names, string $default): string
  * 交付类型缺省：若没有 Configurable Option，则看不出来——返回空让上层报错（强制配 CO）。
  * 也可在此读某 configoptionN 作默认；当前不强加默认（避免误开错类型）。
  */
-function ipd_default_delivery(array $params): string
+function owpprov_default_delivery(array $params): string
 {
     return '';
 }
 
 /** 客户名（firstname+lastname 或 companyname）。 */
-function ipd_client_name(array $params): string
+function owpprov_client_name(array $params): string
 {
     $cd = $params['clientsdetails'] ?? [];
     if (is_array($cd)) {
@@ -1229,7 +1229,7 @@ function ipd_client_name(array $params): string
  *
  * @return array{0:string,1:string} [username, password]（明文）
  */
-function ipd_ensure_service_credentials(array $params): array
+function owpprov_ensure_service_credentials(array $params): array
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     $user      = trim((string) ($params['username'] ?? ''));
@@ -1241,7 +1241,7 @@ function ipd_ensure_service_credentials(array $params): array
         $update['username'] = $user;
     }
     if ($pass === '') {
-        $pass = ipd_random_password(20);
+        $pass = owpprov_random_password(20);
         try {
             $enc = function_exists('localAPI')
                 ? (string) (localAPI('EncryptPassword', ['password2' => $pass])['password'] ?? '')
@@ -1267,7 +1267,7 @@ function ipd_ensure_service_credentials(array $params): array
 }
 
 /** 生成强随机密码（去除易混淆字符 0/O/1/l/I）。 */
-function ipd_random_password(int $len = 20): string
+function owpprov_random_password(int $len = 20): string
 {
     $chars = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     $max   = strlen($chars) - 1;
@@ -1279,7 +1279,7 @@ function ipd_random_password(int $len = 20): string
 }
 
 /** GRE 客户侧配置提示（客户在自己设备上配 GRE 用）。 */
-function ipd_gre_client_hint(array $alloc): string
+function owpprov_gre_client_hint(array $alloc): string
 {
     $prefix   = (string) ($alloc['prefix'] ?? '');
     $tranOur  = (string) ($alloc['ptp_our'] ?? '');   // 我方 transit
@@ -1295,13 +1295,13 @@ function ipd_gre_client_hint(array $alloc): string
 }
 
 // 客户区 CSRF 已改用自包含一次性 nonce（$_SESSION['ipd_csrf_ca'] ↔ 表单隐藏字段 ipd_token），
-// 校验内联在 owp_provision_ClientArea() 里；旧的 ipd_check_token() 已移除。
+// 校验内联在 owp_provision_ClientArea() 里；旧的独立 token 校验函数已移除。
 
 /**
  * 脱敏 $params 再喂给 logModuleCall（去掉可能的密码键；configoptions/customfields 保留，
  * 不含设备密钥）。logModuleCall 自身也会脱敏常见键，这里再加一层。
  */
-function ipd_safe_params(array $params): array
+function owpprov_safe_params(array $params): array
 {
     $safe = $params;
     foreach (['password', 'serverpassword', 'serveraccesshash', 'writePass', 'readPass'] as $k) {
@@ -1313,7 +1313,7 @@ function ipd_safe_params(array $params): array
 }
 
 /** 结构化日志小工具（Module Log）。 */
-function ipd_log(string $action, array $params, string $request, string $response): void
+function owpprov_log(string $action, array $params, string $request, string $response): void
 {
-    logModuleCall('owp_provision', $action, ipd_safe_params($params), $response, $request);
+    logModuleCall('owp_provision', $action, owpprov_safe_params($params), $response, $request);
 }

@@ -598,7 +598,7 @@ function owpprov_create_server(array $params)
             $rosId = (int) ($srv->vpn_device_id ?? 0);
             if ($rosId > 0 && !empty($srv->ipmi_ip) && $vpnUser !== '') {
                 try {
-                    $vpnIp = Ipam::pickFreeVpnIp($rosId);
+                    $vpnIp = Ipam::pickOrReuseVpnIp($rosId, $serviceId); // 重跑复用已分配地址，避免泄漏/不一致
                     owpprov_ros($params, $rosId)->vpnGrant($serviceId, $vpnIp, (string) $srv->ipmi_ip, $vpnUser, $vpnPass);
                     Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)->update([
                         'vpn_device_id' => $rosId,

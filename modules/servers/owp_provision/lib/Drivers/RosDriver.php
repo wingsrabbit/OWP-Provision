@@ -286,8 +286,11 @@ class RosDriver implements DriverInterface
         $tag = self::q(self::tag($serviceId));
         $cmds = [
             '/ppp active remove [find name~' . self::q(self::tag($serviceId)) . ']', // 踢掉在线会话（按需）
-            '/ppp secret remove [find comment=' . $tag . ']',
-            '/ppp profile remove [find comment=' . $tag . ']',
+            '/ppp secret remove [find comment=' . $tag . ']',                          // 先删引用 profile 的 secret
+            // ★ profile 按 **name** 删（vpnGrant 加 profile 时不带 comment）——按 comment 删不掉、会留孤儿，
+            //   下次 vpnGrant `add profile name=<tag>` 撞名 already exists → ros.vpn 失败 → 回滚拆掉在跑的服务。
+            //   按 name 删能清掉现存的无 comment 孤儿；放在 secret 之后避免「profile 被 secret 引用删不掉」。
+            '/ppp profile remove [find name=' . $tag . ']',
             '/ip firewall filter remove [find comment=' . $tag . ']',
             '/ip firewall nat remove [find comment=' . $tag . ']',
             '/ip ipsec identity remove [find comment=' . $tag . ']',

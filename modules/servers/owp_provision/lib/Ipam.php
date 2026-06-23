@@ -466,6 +466,47 @@ class Ipam
     }
 
     /**
+     * 为服务挑 VPN 客户地址：优先**复用**该服务 allocation 已有的 `vpn_ip`（仍在本 ROS 的 vpn_ip 清单、
+     * 且未被其它在用服务占用），否则取一个新的空闲 vpn_ip。**幂等**——避免 re-push/重 Create 泄漏一个
+     * 地址或与原配置（如 ROS profile 的 remote-address）不一致。
+     *
+     * @throws \RuntimeException 无可用 vpn_ip 时
+     */
+    public static function pickOrReuseVpnIp(int $rosDeviceId, int $serviceId): string
+    {
+        $row      = self::getAllocation($serviceId);
+        $existing = $row ? trim((string) (((array) $row)['vpn_ip'] ?? '')) : '';
+        if ($existing !== ''
+            && self::vpnIpInInventory($rosDeviceId, $existing)
+            && !self::vpnIpHeldByOther($rosDeviceId, $existing, $serviceId)) {
+            return $existing; // 复用本服务已有地址
+        }
+        return self::pickFreeVpnIp($rosDeviceId);
+    }
+
+    /** 该 ROS 的 vpn_ip 清单里是否有「启用」的此地址。 */
+    private static function vpnIpInInventory(int $rosDeviceId, string $vpnIp): bool
+    {
+        foreach (Resources::listByDevice($rosDeviceId, 'vpn_ip') as $r) {
+            if ((int) ($r->enabled ?? 0) === 1 && (string) $r->value === $vpnIp) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 此 vpn_ip 是否被「其它」在用服务占用（同 ROS、非本服务、未 terminated）。 */
+    private static function vpnIpHeldByOther(int $rosDeviceId, string $vpnIp, int $exceptServiceId): bool
+    {
+        return Capsule::table(Schema::T_ALLOCATIONS)
+            ->where('vpn_device_id', $rosDeviceId)
+            ->where('vpn_ip', $vpnIp)
+            ->where('serviceid', '!=', $exceptServiceId)
+            ->where('status', '!=', 'terminated')
+            ->exists();
+    }
+
+    /**
      * tunnel-id：优先从清单挑空闲；该设备无 tunnel 清单条目时回退默认区间（占用从 allocations 算）。
      * @throws \RuntimeException
      */

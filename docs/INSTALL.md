@@ -249,6 +249,11 @@ addon *Configure* 填：
 ### A.5 产品（服务器形态）
 建产品时模块 ConfigOption **`serviceModel` 选 `server`**；Configurable Options 建议：`bandwidth`、`prefix_size`、`line`（线路，1:1 匹配带 line 标签的 prefix 资源与服务器）、可选 `server`（指定具体服务器 id；不填=按线路自动挑空闲）。VPN 账号默认用 WHMCS 服务自带 `username/password`，客户在服务详情页**「查看一次」**。
 
+> **v2.1 注意**：
+> - **服务器形态是「直连子网」**：交付段经交换机 Vlanif 当**网关**（如 /29 → Vlanif `.1`，客户服务器用 `.2-.6`），**无 PTP、无静态路由**（区别于 IP Transit/XC 的客户自带路由器模型）。`prefix_size` 下拉**仅放 `/30`~`/28`**（默认 `/29`）——`/32` 单 IP 直连不成立，分配时会被拒。
+> - **username 无需在产品上要求**：Other 类产品常只生成 password，模块会自动生成确定性用户名 `svc<serviceid>` 并存回服务（VPN/iDRAC 账号即用它），客户区「查看一次」一致。
+> - **IPAM 可不必逐档预切**：`prefix` 资源只配大母段即可，下单按掩码不足时模块自动从母段 buddy 切出（落库、可回收）；当然预切好对应掩码会优先使用。
+
 ### A.6 线路 ↔ IP 1:1
 给 `prefix` 资源条目打 `line` 标签（如 `HKBGP` / `HKBGP-CN`），各对应一个已在上游按该 blend 宣告的聚合；下单选 `line` → 从该线路的 prefix 与服务器里分配。
 

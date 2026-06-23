@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-06-23
+
+v2.4.0 后真机全链路干净开通（switch + VPN ✓），唯 iDRAC 仍失败——但已是 v2.3.0 改良过的真实错误 `HTTP 000`。规则对、问题在**时序**：iDRAC 临时 DNAT 规则刚下发对首个新连接尚未生效。无表/列变更，iDRAC 仍非致命。
+
+### 修复
+- **iDRAC 临时 DNAT 开通后首个 Redfish 调用时序竞争（HTTP 000）**：`dnatOpen()` 同步 exec 两条 NAT 规则后**同进程立刻**发 Redfish，而 src-nat(masquerade) 只对新连接首包(SYN)生效——规则刚落表对紧随的首个连接可能尚未生效 → 无 src-nat 建链、iDRAC 回包走自身网关回不来 → `HTTP 000`（手测在加规则与 curl 间有 ~2s 间隔即 200）。两手都做：
+  - **settle 延时**：`RosDriver::dnatOpen` 下发规则后、返回前 `sleep` 可配 `dnatSettleDelay`（addon 全局配置，默认 2s，钳 1~10s）让规则对新连接生效。（已确认 `RosDriver::exec` 同步读回，规则确实落表。）
+  - **Redfish 连接失败重试**：`DracDriver::redfish()` 拆出 `redfishOnce()`，在 `HTTP 000`（curl 连接失败/超时）时退避重试（1s,2s，共 3 次）；有任何 HTTP 响应（含 4xx/5xx）则立即返回不重试。重试都在 DNAT 通道开着的窗口内（dnatClose 仍在 finally）。
+
 ## [2.4.0] - 2026-06-23
 
 v2.3.0 部署后对**已成功开通**的服务点 Create 重跑（补 iDRAC）时，`ros.vpn` 因 `/ppp profile` 撞名失败 → **整单回滚把在跑的交换机配置也拆了**。根因：`vpnRevoke` 漏删 profile（非幂等）。无表/列变更。

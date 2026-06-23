@@ -109,6 +109,11 @@ function owp_provision_config()
                 'Type'         => 'text', 'Size' => '8', 'Default' => '20000',
                 'Description'  => '临时管理 DNAT 公网端口 = 此基数 + serviceid（避开已用端口段）。',
             ],
+            'dnatSettleDelay' => [
+                'FriendlyName' => 'iDRAC DNAT 生效等待秒 / DNAT Settle Delay',
+                'Type'         => 'text', 'Size' => '6', 'Default' => '2',
+                'Description'  => 'dnatOpen 下发 src-nat 规则后等待秒数（1~10），让规则对新连接生效再发 Redfish，避免首调 HTTP 000。配合 DracDriver 的连接失败重试。',
+            ],
         ],
     ];
 }

@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-23
+
+v2.2.0 真机全链路真实下发成功（交换机 + ROS VPN 已落地），**唯独 iDRAC 自动建号失败**。修复经「临时 DNAT」访问 iDRAC Redfish 的两点不通（均真机实测确认，附 HTTP 状态证据）+ 误导错误。改动 ROS NAT 行为 + Redfish 请求头 → minor。无表/列变更。iDRAC 步骤仍非致命。
+
+### 修复
+- **临时 DNAT 缺 src-nat 致 iDRAC Redfish 不通（P1-a，HTTP 000）**：`RosDriver::dnatOpen` 原只加一条 `dstnat`，iDRAC 收到的源是 WHMCS 公网地址 → 回包走 iDRAC 自身默认网关（非 ROS）→ 永不回 WHMCS → curl `HTTP 000`。改为同时加一条 **srcnat masquerade**（`src=mgmtSrcIp dst=iDRAC dst-port=443 out=lan`，让 iDRAC 看到的源是 ROS 内网口、就近回包）；与 dstnat 共用 `owp-svc{id}:dnat` 注释，`dnatClose` 一并清除。真机实测：加 src-nat 后 iDRAC 由 000 变有响应。
+- **Redfish Host 头为 DNAT 前端致 DELL iDRAC 回 HTTP 400（P1-b）**：`DracDriver` 经 `https://<ROS公网>:<pubPort>` 访问，curl 默认带 `Host: <ROS公网>` → 这台 DELL iDRAC 校验 Host、不符回 `HTTP 400 Base.1.8.GeneralError`。改为构造时传入 iDRAC 真实地址（`ipmiTarget`），`redfish()` 显式覆盖 `Host:` 头为真实地址（URL 仍走 DNAT 前端）。真机实测：`-H "Host: <iDRAC真实IP>"` → HTTP 200 + 正常 `ManagerAccountCollection`。
+- **误导错误「iDRAC 无空闲账号槽位」（P2）**：`accounts()` 列举失败（非 2xx/超时）时返回空 → `firstEmptySlot()` 误判为「槽位满」。改为 `accounts()` 区分「列举失败」（记 `lastErr`：HTTP 码 + 脱敏短回显，000 标注连接失败）与「列举成功但无空槽」；`createUser` 在列举失败时报实际 HTTP 错误（提示查 DNAT/Host/凭据），不再误报槽位满。
+
 ## [2.2.0] - 2026-06-23
 
 v2.1.1 真机首次**真实下发**（关 dry-run）暴露：VRP `save` 确认 `Y` 应答时序错导致所有真机开通失败回滚。修复改动了 VRP 传输的 save 交互（jump 改 `-tt` PTY + 分段喂 stdin、direct 改读 `[Y/N]` 再应答）并新增可配 `saveConfirmDelay`，故按 minor 发布。无表/列变更。

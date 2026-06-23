@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-06-23
+
+### 修复
+- **下单库存校验从不执行（B6，v2.6.0 引入的死代码）**：v2.6.0 把库存校验挂在 `ShoppingCartValidateProduct`——**WHMCS 并无此 hook**（9.0.4 购物车校验只有 `ShoppingCartValidateCheckout/…ProductUpdate/…Upgrade/…Domain/…DomainsConfig`），回调从不被派发 → 售罄仍可下单付款。改用官方 **`ShoppingCartValidateCheckout`**（结账提交、创建订单/发票**前**触发，返回错误串数组即阻断并显示给客户；无论直链 add 还是配置页进车都必过此关）：
+  - 整车触发一次 → 遍历 `$_SESSION['cart']['products']`，仅统计本模块 `serviceModel=server` 产品；`owpprov_cart_line` 改为从 cart 条目的 `configoptions` 解析线路（结账阶段 `$_POST` 无配置项）。
+  - 供需比对：先总量兜底（总需求台数 > 全部空闲机 → 拦，覆盖售罄=0 与超量），再逐条具体 line 精确比对（按数量累计需求）。
+  - 拦截文案含「需 N、余 M」；IP transit 不受约束；全程 try/catch **fail-open**（校验自身异常只记日志、不阻断结账）。
+  - 拦截点从「加入购物车」后移到「结账提交」——仍在付款/发票前，满足「不让客户付款后才失败」。更早的「产品页原生 Out of Stock」属可选增强（WHMCS Stock Control），未做。
+
 ## [2.6.0] - 2026-06-23
 
 产品上架后以客户视角走查发现的插件侧不合理之处：服务器交付客户区缺连接信息、无空闲机仍可下单。（后台产品描述/分组/定价/图标类由操作员处理，不在此。）

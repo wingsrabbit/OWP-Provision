@@ -24,8 +24,8 @@ if (!defined('WHMCS')) {
 
 class Schema
 {
-    /** 当前 schema 版本；addon `_upgrade()` 按此迁移。v2.6.0 给 devices 加 ros_pub_host（见 migrate）。 */
-    public const VERSION = '2.6.0';
+    /** 当前 schema 版本；addon `_upgrade()` 按此迁移。v2.6.0 给 devices 加 ros_pub_host；v2.7.0 无表/列变更。 */
+    public const VERSION = '2.7.0';
 
     public const T_POOLS       = 'mod_owp_provision_pools';       // 已弃用（迁移源/回滚保留）
     public const T_RESOURCES   = 'mod_owp_provision_resources';   // 清单式 IPAM：逐条具体资源

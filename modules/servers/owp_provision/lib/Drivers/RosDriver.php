@@ -336,6 +336,12 @@ class RosDriver implements DriverInterface
             . ' dst-address=' . $ipmiTarget . ' dst-port=' . $targetPort
             . ' out-interface=' . $lan
             . ' comment=' . $tag);
+        // settle：exec 同步返回=规则已落表，但 src-nat(masquerade) 只对新连接首包(SYN)生效，规则刚下发对
+        // 紧随的首个连接可能尚未生效（→ 无 src-nat 建链、iDRAC 回包不回 → curl HTTP 000）。停顿让其生效。
+        if (!$this->dryRun) {
+            $delay = max(1, min(10, (int) Config::get('dnatSettleDelay', '2')));
+            sleep($delay);
+        }
         return ['ok' => true, 'pubPort' => $pubPort, 'dryRun' => $this->dryRun];
     }
 

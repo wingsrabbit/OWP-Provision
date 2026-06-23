@@ -159,8 +159,31 @@ class DracDriver
         return 'HTTP ' . $code . ($snippet !== '' ? '：' . $snippet : '');
     }
 
-    /** 发一个 Redfish 请求。返回 ['code'=>int,'body'=>string]。自签证书不校验。 */
+    /**
+     * 发一个 Redfish 请求（带连接失败退避重试）。返回 ['code'=>int,'body'=>string]。
+     *
+     * `HTTP 000`（curl 连接失败/超时）时退避重试（1s,2s…，共 3 次）——覆盖「iDRAC 临时 DNAT 的
+     * src-nat(masquerade) 规则刚下发、对首个新连接尚未生效」的时序竞争 + 偶发网络抖动。有任何 HTTP
+     * 响应（含 4xx/5xx）则立即返回、不重试（交上层判定）。
+     */
     private function redfish(string $method, string $path, ?array $body = null): array
+    {
+        $attempts = 3;
+        $r = ['code' => 0, 'body' => ''];
+        for ($i = 1; $i <= $attempts; $i++) {
+            $r = $this->redfishOnce($method, $path, $body);
+            if ($r['code'] !== 0) {
+                return $r; // 已有 HTTP 响应（含错误码）→ 不重试
+            }
+            if ($i < $attempts) {
+                sleep($i); // 连接失败：退避后重试（1s,2s）
+            }
+        }
+        return $r;
+    }
+
+    /** 实发一次 Redfish 请求。返回 ['code'=>int,'body'=>string]。自签证书不校验。 */
+    private function redfishOnce(string $method, string $path, ?array $body = null): array
     {
         $url = strpos($path, 'http') === 0 ? $path : ($this->base . $path);
         $ch  = curl_init($url);

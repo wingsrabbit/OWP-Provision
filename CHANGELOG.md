@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-06-23
+
+v2.1.1 真机首次**真实下发**（关 dry-run）暴露：VRP `save` 确认 `Y` 应答时序错导致所有真机开通失败回滚。无表/列变更。
+
+### 修复
+- **VRP `save` 确认 `Y` 应答时序（P0，阻断所有真机开通）**：把含 `save` 的命令块一次性喂入设备时，`save\n` 的换行会被 `[Y/N]` 当空应答吃掉、随后同块里的 `Y` 变成独立命令报 `Unrecognized command` → save 永不确认 → `saveConfirmed()` 判失败 → 回滚（dry-run 全绿、真机此步必挂；XC/GRE/server 共用，全中招）。两条传输路径都修：
+  - **jump**（`buildJumpExec`）：含 save 时改用 `-tt` 交互 PTY + **分段喂 stdin**——先送 config+save、**停顿** `saveConfirmDelay`（默认 2s、可配、钳 1~10s）等 `[Y/N]` 真正出现、再送 `Y` 应答、再 `quit` 退出；无 save 的只读/测试路径原样不变。
+  - **direct**（`shellRun`/新增 `shellConfirmSave`）：遇 `save` 行**先阻塞读到 `[Y/N]` 提示再送 `Y`**（不再按通用「写一行→读提示符」把 save 与 Y 当两条普通行），落盘给足超时、未确认重试一次。
+  - `saveConfirmed()` 命中串不变；保留 v1 已验证的命令内容/Templates/IPAM。红线：只动接入交换机、save 只落盘不改配置。
+- **dry-run Terminate 漏释放服务器（P2）**：服务器产品在全局 dry-run 下 Terminate 时，dry-run 分支释放分配后提前 `return`，跳过了 `Servers::releaseByService()`（纯 DB、不触设备）→ 服务器仍 `rented` 需手动 free。改为 dry-run 也执行服务器回库存（幂等），并补 `ros.vpn`/`drac` 的 `dryrun` oplog，使 DB 终态与真实路径一致。
+
 ## [2.1.1] - 2026-06-23
 
 ### 修复

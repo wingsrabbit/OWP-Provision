@@ -259,8 +259,20 @@ class Connection
             // 初始无提示符（少见）：忽略，靠下方逐行读。
         }
 
-        foreach (explode("\n", rtrim($block, "\n")) as $line) {
+        $blockLines = explode("\n", rtrim($block, "\n"));
+        $count      = count($blockLines);
+        for ($i = 0; $i < $count; $i++) {
+            $line = $blockLines[$i];
             if ($line === '') {
+                continue;
+            }
+            // save 落盘：**先读到 [Y/N] 提示再送 Y**（避免 Y 在 prompt 就绪前送达被当独立命令），
+            // 而不是按通用「write 一行→read 提示符」把 save 与 Y 当两条普通行。
+            if (strcasecmp(trim($line), 'save') === 0) {
+                $out .= $this->shellConfirmSave($ssh, $prompt, $REGEX, $timeout);
+                if ($i + 1 < $count && strcasecmp(trim($blockLines[$i + 1]), 'Y') === 0) {
+                    $i++; // 跳过 buildBlock 追加的 Y（已由 shellConfirmSave 应答）
+                }
                 continue;
             }
             $ssh->write($line . "\n");
@@ -275,6 +287,58 @@ class Connection
             try {
                 $ssh->disconnect();
             } catch (\Throwable $e) {
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * direct 交互下的 `save` 确认：送 `save` → **阻塞读到 `[Y/N]` 确认问句**（跳过 save 命令回显的
+     * CLI 提示符，避免 echo 提前匹配导致 Y 在 prompt 就绪前送出）→ 送 `Y` 应答 → 读到「保存成功」
+     * 或回到 CLI 提示符（落盘有数秒延迟 → 给足超时）。未确认时重试一次正确应答。返回累计回显。
+     *
+     * @param object $ssh
+     * @param string $prompt 通用提示符正则
+     * @param mixed  $REGEX  read 模式常量
+     */
+    private function shellConfirmSave($ssh, string $prompt, $REGEX, int $timeout): string
+    {
+        $out  = '';
+        $long = max($timeout, 20); // 落盘可能数秒
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            $ssh->write("save\n");
+            $ynSeen = false;
+            try {
+                $chunk  = (string) $ssh->read('#\[Y/N\]#i', $REGEX); // 阻塞到确认问句真正出现
+                $out   .= $chunk;
+                $ynSeen = (bool) preg_match('#\[Y/N\]#i', $chunk);
+            } catch (\Throwable $e) {
+                $out .= "\n[save: 未读到 [Y/N]（attempt {$attempt}）]\n";
+            }
+            if ($ynSeen) {
+                $ssh->write("Y\n"); // 仅在 [Y/N] 出现后应答
+            }
+            if (method_exists($ssh, 'setTimeout')) {
+                $ssh->setTimeout($long);
+            }
+            try {
+                $out .= (string) $ssh->read('#(successfully|is saved|[>\]]\s*$)#i', $REGEX);
+            } catch (\Throwable $e) {
+                $out .= "\n[save read: " . $e->getMessage() . " (attempt {$attempt})]\n";
+            }
+            if (method_exists($ssh, 'setTimeout')) {
+                $ssh->setTimeout($timeout > 0 ? $timeout : 30);
+            }
+            if (stripos($out, 'successfully') !== false || stripos($out, 'is saved') !== false) {
+                break; // 已落盘，不再重试
+            }
+            if ($attempt < 2) {
+                // 未确认：送回车回到干净提示符，再试一次。
+                $ssh->write("\n");
+                try {
+                    $ssh->read($prompt, $REGEX);
+                } catch (\Throwable $e) {
+                }
             }
         }
         return $out;
@@ -343,10 +407,42 @@ class Connection
             '-o', escapeshellarg('UserKnownHostsFile=/dev/null'),
             '-o', escapeshellarg('ConnectTimeout=20'),
             '-o', escapeshellarg($kexOpt),
-            escapeshellarg($devUser . '@' . $devHost),
-            escapeshellarg($deviceBlock),
         ];
+
+        [$throughSave, $hasSave] = $this->splitSaveTail($deviceBlock);
+        if ($hasSave) {
+            // VRP `save` 确认时序修复（真机实测）：把命令块作为单参数一次性喂入时，`save\n` 的换行会被
+            // `[Y/N]` 当空应答吃掉、随后同块里的 `Y` 变成独立命令报 Unrecognized → save 永不确认。
+            // 改为：`-tt` 交互 PTY + **分段喂 stdin**——先送 config+save，**停顿**等 `[Y/N]` 真正出现，
+            // 再送 `Y` 应答，再 `quit` 退出。停顿时长 = saveConfirmDelay（默认 2s，可配，钳在 1~10s）。
+            $delay     = max(1, min(10, (int) ($this->cfg['saveConfirmDelay'] ?? 2)));
+            $parts[]   = '-tt';
+            $parts[]   = escapeshellarg($devUser . '@' . $devHost);
+            $sshInvoke = implode(' ', $parts);
+            return "{ printf '%s' " . escapeshellarg($throughSave)
+                . '; sleep ' . $delay . "; printf 'Y\\n'"
+                . '; sleep ' . $delay . "; printf 'quit\\n'"
+                . '; sleep 1; } | ' . $sshInvoke;
+        }
+
+        // 只读 display / 无 save：原样把命令块作为远端命令参数（保持既有已验证行为）。
+        $parts[] = escapeshellarg($devUser . '@' . $devHost);
+        $parts[] = escapeshellarg($deviceBlock);
         return implode(' ', $parts);
+    }
+
+    /**
+     * 拆分命令块尾部的 `save\nY`（buildBlock 配置类追加的落盘+应答）。
+     * 命中则返回 [到 `save\n` 为止的部分, true]（剥掉应答行 Y，交由调用方按机型时序单独送 Y）；否则 [原块, false]。
+     *
+     * @return array{0:string,1:bool}
+     */
+    private function splitSaveTail(string $block): array
+    {
+        if (preg_match('/\nsave\nY\n?$/', $block)) {
+            return [preg_replace('/\nY\n?$/', "\n", $block), true]; // 去掉最后的 Y 行，保留 ...\nsave\n
+        }
+        return [$block, false];
     }
 
     /**

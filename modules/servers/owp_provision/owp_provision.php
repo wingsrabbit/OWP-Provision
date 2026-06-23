@@ -369,6 +369,20 @@ function owp_provision_TerminateAccount(array $params)
             logModuleCall('owp_provision', 'TerminateAccount', owpprov_safe_params($params), $res['output'], $res['block']);
 
             if ($res['dryrun']) {
+                // dry-run 也走纯 DB 终态（不触设备），与真实路径终态一致：撤 VPN/iDRAC 仅记 dryrun，
+                // 但 Servers::releaseByService 是纯 DB（不触设备）→ 必须真执行，否则服务器在 dry-run 销户后仍 rented。
+                $rosId = (int) ($alloc['vpn_device_id'] ?? 0);
+                $srv   = Servers::byService($serviceId);
+                if ($rosId > 0 && $srv && (string) ($srv->ipmi_kind ?? '') === 'idrac') {
+                    Orchestrator::log($serviceId, 'terminate', 'drac.user_delete', $rosId, 'dryrun', '', '(dry-run) 跳过删 iDRAC 子账号');
+                }
+                if ($rosId > 0) {
+                    Orchestrator::log($serviceId, 'terminate', 'ros.vpn_revoke', $rosId, 'dryrun', '', '(dry-run) 跳过撤 VPN + 管理 DNAT');
+                }
+                if ($srv) {
+                    Servers::releaseByService($serviceId);
+                    Orchestrator::log($serviceId, 'terminate', 'server.release', null, 'dryrun', '', '(dry-run) 服务器回库存(free)');
+                }
                 Ipam::release($serviceId);
                 Orchestrator::log($serviceId, 'terminate', 'vrp.teardown', $devId, 'dryrun', '', '(dry-run) 已释放分配');
                 return 'success';

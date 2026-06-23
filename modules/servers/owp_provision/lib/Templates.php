@@ -152,6 +152,70 @@ class Templates
     }
 
     // ======================================================================
+    // 服务器（租赁/托管）开通 —— 独立服务器 = 直连 VLAN，Vlanif 即网关，无 PTP、无 route-static
+    // ======================================================================
+
+    /**
+     * 渲染独立服务器开通命令：vlan + Vlanif(网关=交付段第一可用 IP) + 物理口 access + qos lr。
+     * 交付段是 Vlanif 直连子网；服务器用其余 IP，网关填 Vlanif 地址。需要键：vlan_id, port, prefix, bandwidth。
+     * @return string[]
+     */
+    public static function serverCreate(array $alloc, string $custTag): array
+    {
+        $vid    = (int) $alloc['vlan_id'];
+        $port   = (string) $alloc['port'];
+        $prefix = self::parsePrefix((string) $alloc['prefix']);
+        $gw     = self::firstUsable($prefix['net'], (int) $prefix['len']);
+        $cir    = self::bandwidthToCirKbps((string) ($alloc['bandwidth'] ?? '100M'));
+
+        $lines = [];
+        $lines[] = 'system-view';
+        $lines[] = 'vlan ' . $vid;
+        $lines[] = ' description ' . $custTag;
+        $lines[] = 'quit';
+        // Vlanif = 该子网网关（直连子网，无 PTP、无 route-static）
+        $lines[] = 'interface Vlanif' . $vid;
+        $lines[] = ' description ' . $custTag;
+        $lines[] = ' ip address ' . $gw . ' ' . $prefix['mask'];
+        $lines[] = 'quit';
+        // 服务器 NIC 所在物理口：access 入 VLAN + 整口限速
+        $lines[] = 'interface ' . $port;
+        $lines[] = ' description ' . $custTag;
+        $lines[] = ' port link-type access';
+        $lines[] = ' port default vlan ' . $vid;
+        $lines[] = ' qos lr inbound cir ' . $cir;
+        $lines[] = ' qos lr outbound cir ' . $cir;
+        $lines[] = 'quit';
+        $lines[] = 'return';
+        return $lines;
+    }
+
+    /**
+     * 服务器拆除：逆序 undo（撤 qos lr → 端口复原 → undo Vlanif → undo vlan）。无 route-static 可撤。
+     * @return string[]
+     */
+    public static function serverTeardown(array $alloc): array
+    {
+        $vid  = (int) $alloc['vlan_id'];
+        $port = (string) $alloc['port'];
+
+        $lines = [];
+        $lines[] = 'system-view';
+        if ($port !== '') {
+            $lines[] = 'interface ' . $port;
+            $lines[] = ' undo qos lr inbound';
+            $lines[] = ' undo qos lr outbound';
+            $lines[] = ' undo port default vlan';
+            $lines[] = ' undo description';
+            $lines[] = 'quit';
+        }
+        $lines[] = 'undo interface Vlanif' . $vid;
+        $lines[] = 'undo vlan ' . $vid;
+        $lines[] = 'return';
+        return $lines;
+    }
+
+    // ======================================================================
     // GRE 开通
     // ======================================================================
 
@@ -445,21 +509,36 @@ class Templates
      */
     public static function verifyCommands(array $alloc): array
     {
+        $type = (string) ($alloc['delivery_type'] ?? '');
+        $cmds = [];
+        if ($type === 'server') {
+            // 独立服务器 = Vlanif 直连子网，**无 route-static** → 只查 VLAN/Vlanif，不查 routeHit。
+            $vid = (int) $alloc['vlan_id'];
+            $cmds['vlan']  = 'display vlan ' . $vid;
+            $cmds['iface'] = 'display interface Vlanif' . $vid;
+            return $cmds;
+        }
         $prefix = self::parsePrefix((string) $alloc['prefix']);
-        $cmds   = [
-            // 带掩码长 = 精确单条查询：客户段删除后输出为空，避免华为最长匹配回退到池聚合(/24 NULL0)被误判残留。
-            'route' => 'display ip routing-table ' . $prefix['net'] . ' ' . $prefix['len'],
-            // 注：XC 用端口 qos lr、隧道不限速 → 不再查 traffic-policy applied-record。
-        ];
-        if (($alloc['delivery_type'] ?? '') === 'gre') {
-            $n = (int) $alloc['tunnel_id'];
-            $cmds['iface'] = 'display interface Tunnel' . $n;
-        } else {
+        // 带掩码长 = 精确单条查询：客户段删除后输出为空，避免华为最长匹配回退到池聚合(/24 NULL0)被误判残留。
+        $cmds['route'] = 'display ip routing-table ' . $prefix['net'] . ' ' . $prefix['len'];
+        if ($type === 'gre') {
+            $cmds['iface'] = 'display interface Tunnel' . (int) $alloc['tunnel_id'];
+        } else { // xc
             $vid = (int) $alloc['vlan_id'];
             $cmds['vlan']  = 'display vlan ' . $vid;
             $cmds['iface'] = 'display interface Vlanif' . $vid;
         }
         return $cmds;
+    }
+
+    /** 子网第一可用 IP（作 Vlanif 网关）。/≤30 → 网络+1；/31 → 网络(RFC3021)；/32 → 该 IP。 */
+    public static function firstUsable(string $net, int $len): string
+    {
+        $base = ip2long($net);
+        if ($base === false) {
+            return $net;
+        }
+        return $len >= 31 ? long2ip($base) : long2ip($base + 1);
     }
 
     /**

@@ -112,6 +112,49 @@ class Ipam
     }
 
     /**
+     * 为一台**租赁/托管独立服务器**分配资源（事务 + 行锁）。
+     * 服务器是接在交换机口的 L2 终端主机（不是路由对端）→ **只挑 vlan + prefix(精确掩码) + port，
+     * 不挑 ptp、不下静态路由**；Vlanif 即网关、交付段为 Vlanif 直连子网（见 Templates::serverCreate）。
+     * delivery_type='server'，ptp_* 留空。
+     *
+     * @param string $port 服务器 NIC 线缆到的固定端口（须为该设备 port 资源且空闲）
+     * @throws \RuntimeException
+     */
+    public static function allocateServer(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, string $port): array
+    {
+        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $prefixSize, $bandwidth, $port) {
+            $existing = self::lockAllocation($serviceId);
+            if ($existing && $existing->status !== 'terminated') {
+                return (array) $existing; // 幂等复用
+            }
+            $maskLen = self::normalizeMaskLen($prefixSize);
+            if ($maskLen >= 32) {
+                // 直连子网模型不成立：服务器需「网关 + 主机」至少 /31(RFC3021)；建议产品仅放 /30~/28。
+                throw new \RuntimeException('服务器交付不支持 /32（需直连子网，请用 /30~/28，默认 /29）。');
+            }
+            $vlan    = self::pickFreeVlan($deviceId);
+            $prefix  = self::pickFreePrefix($deviceId, $maskLen);
+            $portN   = self::pickFreePort($deviceId, $port); // 服务器固定口（须为该设备 port 资源且空闲）
+
+            $row = [
+                'serviceid'     => $serviceId,
+                'device_id'     => $deviceId,
+                'delivery_type' => 'server',
+                'vlan_id'       => $vlan,
+                'prefix'        => $prefix,
+                'port'          => $portN,
+                'bandwidth'     => $bandwidth,
+                'policy_name'   => self::policyName($serviceId),
+                'status'        => 'active',
+                'created_at'    => date('Y-m-d H:i:s'),
+                'updated_at'    => date('Y-m-d H:i:s'),
+            ];
+            self::upsertAllocation($serviceId, $row, (bool) $existing);
+            return $row;
+        });
+    }
+
+    /**
      * 为一个 GRE 服务分配资源（事务 + 行锁）。需要客户对端 IP（已在上层校验合法）。
      *
      * @param int    $serviceId

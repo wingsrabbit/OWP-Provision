@@ -6,7 +6,7 @@
 >
 > **IP 交付核心（已真机验证）**：在华为 VRP 接入交换机上以 **物理交叉连接(XC)** 或 **GRE 隧道** 交付公网 IPv4，端口 `qos lr` 限速，暂停/恢复/销户反向拆除回收。
 
-![version](https://img.shields.io/badge/version-2.0-blue)
+![version](https://img.shields.io/badge/version-2.1-blue)
 ![WHMCS](https://img.shields.io/badge/WHMCS-9.x-2a9fd6)
 ![PHP](https://img.shields.io/badge/PHP-8.3%2B-777bb4)
 ![license](https://img.shields.io/badge/license-MIT-orange)
@@ -36,7 +36,7 @@
 v2 把模块从「IP 交付」重构为**产品驱动的开通编排器**：一个 WHMCS 产品 = 一份**蓝图**（产品 ConfigOption `serviceModel`：`ip_transit` 或 `server`），`CreateAccount` 在全局锁内按步编排、`Terminate` 逆序回滚。
 
 - **设备驱动分层**：`Drivers/VrpDriver`（华为 VRP 交换机）、`Drivers/RosDriver`（MikroTik RouterOS：VPN + iDRAC 临时 DNAT）、`Drivers/DracDriver`（iDRAC Redfish）；设备表带 `driver` 字段，新增设备类型不动蓝图。
-- **服务器租赁 / 托管蓝图**：选/绑空闲服务器（库存原子绑定）→ 在其交换机端口发 IP（XC：vlan/vlanif/`qos lr`/route）→ 经其 ROS 开 IPMI VPN → iDRAC 建最小权限子账号 → 交付（网络通 + VPN 可达 IPMI，OS 客户自装）。
+- **服务器租赁 / 托管蓝图**：选/绑空闲服务器（库存原子绑定）→ 在其交换机端口**直连发 IP**（独立服务器 = L2 终端主机：vlan + Vlanif 当网关 + 物理口 access + `qos lr`，**直连子网、无 PTP/路由**）→ 经其 ROS 开 IPMI VPN → iDRAC 建最小权限子账号 → 交付（网络通 + VPN 可达 IPMI，OS 客户自装）。
 - **多协议 VPN**（RouterOS）：一条 `ppp secret`(service=any) 即 L2TP / PPTP / SSTP / OpenVPN + 可选 IKEv2；每客户专属 pin IP + 隔离 filter（**只通公网 + 自己 IPMI，其余 drop**）。
 - **服务器库存**：物理机资产表（所属交换机+端口 / IPMI / 所在 ROS / 线路 / 规格 / 状态），admin 维护，下单 1:1 绑定。
 - **编排器**：全局锁**串行执行**（杜绝并发乱序）、每步落 `oplog`（保留 7 天）、失败**逐步回滚**；后台**开通队列 + 步骤时间线** UI 看「卡在哪一步」。
@@ -106,10 +106,10 @@ WHMCS 客户下单 ──▶ CreateAccount ──▶ 从该设备的 IPAM 清单
 详见 **[docs/INSTALL.md](docs/INSTALL.md)**。简要:
 
 1. **上传**:把 `modules/servers/owp_provision/` 与 `modules/addons/owp_provision/` 上传到 WHMCS 的 `modules/` 下(保持路径)。目录 755 / 文件 644 / owner 同站点。
-2. **激活**:后台 → *Setup → Addon Modules* → 「IP Delivery」→ **Activate**(幂等自动建 `mod_owp_provision_*` 表)。授权可访问该 addon 的管理员角色。
+2. **激活**:后台 → *Setup → Addon Modules* → 「OWP Provision」→ **Activate**(幂等自动建 `mod_owp_provision_*` 表)。授权可访问该 addon 的管理员角色。
 3. **加设备**:进 addon 管理页「设备 / Devices」区,新增交换机连接配置 + 凭据,**Test Connection** 验证。
 4. **配资源**:在「资源 / Resources」区按你的可交付聚合 / 空闲端口填入 IPAM 清单。
-5. **建产品**:Type = *Other*,Module = *IP Delivery*,加 `delivery_type` / `bandwidth` / `prefix_size`(多设备再加 `node`)Configurable Options 与 `Remote Endpoint IP` / `XC Port` 自定义字段。
+5. **建产品**:Type = *Other*,Module = *OWP Provision*,加 ConfigOption `serviceModel`(`ip_transit` 或 `server`) + `bandwidth` / `prefix_size`(server 建议仅 /30~/28,默认 /29);IP Transit 再加 `delivery_type` / `Remote Endpoint IP` / `XC Port`,server 加 `line` / `server` 选项(库存绑定)。详见 [docs/INSTALL.md](docs/INSTALL.md) 附录 A。
 6. **测试**:开 Dry-Run,下单核对命令块 → 关 Dry-Run 用安全测试值真开 → 全流程过后放量。
 
 > server 模块**必须**安装(addon 共用其 `lib/`)。改 hooks 后 deactivate→activate 一次刷新 hook 缓存。

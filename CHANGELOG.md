@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-06-23
+
+**服务器租赁交付模型修复**：v2.0.0 真机首测（服务器产品全局 dry-run）暴露的问题集合——核心是独立服务器错用了 IP Transit 的 PTP/路由模型。无表/列变更，均复用现有结构。
+
+### 修复
+- **独立服务器走「直连 VLAN + Vlanif 网关」模型，去 PTP/route-static（P0-1）**：服务器租赁/托管的独立服务器是接在交换机口的 **L2 终端主机**（不是路由对端），原误复用 `Ipam::allocateXc()` + `Templates::xcCreate()` 的 **PTP /30 + `ip route-static 客户段 → 对端`**（那是客户自带路由器的 IP Transit 模型）。新增 `Ipam::allocateServer()`（只挑 vlan + prefix 精确掩码 + 服务器固定 port，**不挑 ptp**，`delivery_type='server'`，拒绝 `/32`）+ `Templates::serverCreate/serverTeardown()`（vlan + Vlanif `ip address 交付段第一可用 IP` 当**网关** + 物理口 access + `qos lr`；**无 PTP、无 route-static**，交付段为 Vlanif 直连子网）+ `Templates::firstUsable()`（/≤30→网络+1、/31→RFC3021）。`VrpDriver::method()` 分派 server、校验只查 Vlanif/VLAN（**不查 routeHit**）。`ipd_create_server` 改用 `allocateServer`。红线不变：只动接入交换机 vlan/interface/Vlanif/qos/save。
+- **自动生成并存回服务凭据，修「Other 类产品无 username 致 VPN/iDRAC 整段被跳过」（P0-2）**：WHMCS 对 Other 类产品常只生成 password、不生成 username → VPN 用户名为空 → `ros.vpn` 与 iDRAC 被跳过。新增 `ipd_ensure_service_credentials()`：username 空则生成确定性安全名 `svc<serviceid>`（`[a-z0-9]`，ppp/iDRAC 安全）；password 空则随机强密码；按需存回 `tblhosting`（password 走 WHMCS `EncryptPassword`）；**幂等**（已有不覆盖）。
+- **dashboard.css 嵌入 WHMCS 后台修复（P1-2）**：原为整页独立仪表盘设计，注入 addon 页后 `.owp` 根 `min-height:100vh` 顶出约 836px 空白、`.owp-panel{display:none}` 靠 tab 状态选择器激活导致队列面板永久隐藏。修：`.owp` 去 `min-height:100vh` + 背景 transparent + padding 收为嵌入态；队列面板加 `id="owp-p-queue"` 命中既有激活规则。全部选择器本就 scope 在 `.owp`/`.owp-*`（无全局泄漏）。
+
+### 变更
+- **全局 helper 改唯一前缀 `owpprov_`，避免与历史插件 `ipd_*` 全局符号撞名（P1-1）**：旧 `termrat_ipdelivery` 未删时两插件 addon 主文件都定义全局 `ipd_*` → `Cannot redeclare ipd_admin_pool_kinds()` 整页 500。**62 个**全局 helper `ipd_*` → `owpprov_*`（按词边界精确改名）；WHMCS 模块入口 `owp_provision_*`（18 个）与命名空间类 `OwpProvision\*` 不变；会话/表单/GET/POST/DOM 协议字符串（`ipd_csrf_ca` / `ipd_token` / `ipd_action` / `ipd_ajax` / `ipd_remote_ip` / `ipd_xc_port_select`）保留不动。
+- **清单式 IPAM 支持按需切母段（P2）**：`Ipam::pickFreePrefix()` 原只精确命中 `mask==请求掩码` 的空闲条目（客户自由选 /28-/32 需逐档无重叠预切）。改为先精确命中、无则 `carveFreePrefix()` 从「更大的空闲母段」**buddy 拆分**切出（删母段、插「切出段 + 各级 buddy 兄弟段」落库；占用按 CIDR 重叠判定 → 只切出段被占用、兄弟段保持空闲、可继续切/分配、Terminate 后可回收）；母段取自 freeItems（必不与分配重叠）→ 拆分安全，全程在 allocate 事务内原子执行，`source='carve'` 留痕。向后兼容（有精确预切时不触发）。
+
 ## [2.0.0] - 2026-06-22
 
 **产品驱动重构**：从「IP 交付插件」重构为**产品驱动的开通编排器**——一个 WHMCS 产品 = 一份蓝图，编排器（全局锁串行 + 按步日志 + 失败逐步回滚）跨「华为 VRP 交换机 / MikroTik RouterOS / 服务器 iDRAC」编排开通。新增：服务器租赁·托管（绑机+发IP+IPMI VPN+iDRAC 建号）、多协议 VPN、服务器库存、后台开通队列时间线 UI。模块更名 `owp_provision`（表前缀 `mod_owp_provision_`）。详见下方各项。

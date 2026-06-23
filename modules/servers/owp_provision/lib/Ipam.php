@@ -333,12 +333,65 @@ class Ipam
      */
     public static function pickFreePrefix(int $deviceId, int $maskLen): string
     {
-        foreach (Resources::freeItems($deviceId, 'prefix') as $r) {
+        $free = Resources::freeItems($deviceId, 'prefix');
+        // 1) 精确掩码命中（管理员已按该掩码预切的条目，优先用）
+        foreach ($free as $r) {
             if ((int) ($r->mask ?? 0) === $maskLen) {
                 return $r->value . '/' . $maskLen;
             }
         }
-        throw new \RuntimeException('无空闲 /' . $maskLen . ' 交付前缀。请在 IPAM 页按 /' . $maskLen . ' 切分母段或手动添加该掩码的交付段。');
+        // 2) 按需从「更大的空闲母段」切出 /maskLen（客户自由选掩码无需逐档预切）
+        $carved = self::carveFreePrefix($deviceId, $maskLen, $free);
+        if ($carved !== null) {
+            return $carved;
+        }
+        throw new \RuntimeException('无空闲 /' . $maskLen . ' 交付前缀，且无更大的空闲母段可切。请在 IPAM 页为该设备添加该掩码的交付段或更大母段。');
+    }
+
+    /**
+     * 从一个空闲母段按 **buddy 拆分**切出一个 /$maskLen，并把结果**落库**（删母段、插「切出段 + 各级 buddy 兄弟段」），
+     * 使占用判定（CIDR 重叠）只把切出段算占用、其余兄弟段保持空闲、可继续切/分配、Terminate 后可回收。
+     *
+     * 选「最紧凑」母段（mask 最大但 < $maskLen），减少大段碎片。母段取自 freeItems → 必不与现有分配重叠，
+     * 故其所有子块皆空闲，拆分安全。**必须在 allocate 的事务内调用**（与随后写 allocation 同事务，原子）。
+     *
+     * 例：/27 切 /29 → 删 31.77.184.0/27，插 31.77.184.0/29(切出) + 31.77.184.8/29 + 31.77.184.16/28（兄弟，空闲）。
+     *
+     * @param object[] $free freeItems(deviceId,'prefix') 结果（含 id/value/mask）
+     * @return string|null 'net/maskLen'；无可切母段返回 null
+     */
+    private static function carveFreePrefix(int $deviceId, int $maskLen, array $free): ?string
+    {
+        // 候选：mask < maskLen 的空闲母段；取 mask 最大者（最紧凑）
+        $parent = null;
+        foreach ($free as $r) {
+            $pm = (int) ($r->mask ?? 0);
+            if ($pm > 0 && $pm < $maskLen) {
+                if ($parent === null || $pm > (int) $parent->mask) {
+                    $parent = $r;
+                }
+            }
+        }
+        if ($parent === null) {
+            return null;
+        }
+        $pm    = (int) $parent->mask;
+        $pNet  = (string) $parent->value;
+        $pLong = ip2long($pNet);
+        if ($pLong === false) {
+            return null;
+        }
+        // 切出的最低块 = 母段网络地址 / maskLen；逐级 buddy（上半块）保持空闲
+        $carvedNet = long2ip($pLong);
+        $siblings  = [];
+        for ($m = $pm + 1; $m <= $maskLen; $m++) {
+            $siblings[] = [long2ip($pLong + (1 << (32 - $m))), $m]; // 该级的 buddy（上半 /m 块）
+        }
+        $note = 'carve ' . $pNet . '/' . $pm;
+        Resources::delete((int) $parent->id);                                      // 删母段
+        Resources::add($deviceId, 'prefix', $carvedNet, $maskLen, 'carve', $note); // 切出段（随后被本次分配占用）
+        Resources::addMany($deviceId, 'prefix', $siblings, 'carve', $note);        // buddy 兄弟段（保持空闲）
+        return $carvedNet . '/' . $maskLen;
     }
 
     /**

@@ -418,7 +418,7 @@ function owp_provision_TerminateAccount(array $params)
                     $ros2    = owpprov_ros($params, $rosId);
                     try {
                         $ros2->dnatOpen($serviceId, (string) $srv->ipmi_ip, 443, $msrc, $pubPort);
-                        (new DracDriver('https://' . $rosHost . ':' . $pubPort, $iu, $ip, Config::isDryRun($params)))->deleteUser($vu);
+                        (new DracDriver('https://' . $rosHost . ':' . $pubPort, $iu, $ip, Config::isDryRun($params), (string) $srv->ipmi_ip))->deleteUser($vu);
                         Orchestrator::log($serviceId, 'terminate', 'drac.user_delete', $rosId, 'ok', '', $vu);
                     } catch (\Throwable $e) {
                         Orchestrator::log($serviceId, 'terminate', 'drac.user_delete', $rosId, 'failed', '', $e->getMessage());
@@ -633,7 +633,8 @@ function owpprov_create_server(array $params)
                 $ros     = owpprov_ros($params, $rosId);
                 try {
                     $ros->dnatOpen($serviceId, (string) $srv->ipmi_ip, 443, $mgmtSrc, $pubPort);
-                    $drac = new DracDriver('https://' . $rosHost . ':' . $pubPort, $ipmiUser, $ipmiPass, Config::isDryRun($params));
+                    // Host 头 = iDRAC 真实地址（DELL iDRAC 校验 Host；URL 仍走 DNAT 前端）。
+                    $drac = new DracDriver('https://' . $rosHost . ':' . $pubPort, $ipmiUser, $ipmiPass, Config::isDryRun($params), (string) $srv->ipmi_ip);
                     $du   = $drac->createUser($vpnUser, $vpnPass, 'Operator');
                     Orchestrator::log($serviceId, 'create_server', 'drac.user', $rosId,
                         !empty($du['ok']) ? (!empty($du['dryRun']) ? 'dryrun' : 'ok') : 'failed', '',

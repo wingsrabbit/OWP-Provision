@@ -314,17 +314,25 @@ class RosDriver implements DriverInterface
     public function dnatOpen(int $serviceId, string $ipmiTarget, int $targetPort, string $srcAllow, int $pubPort): array
     {
         $wan = $this->wanIf();
-        if ($wan === '') {
-            throw new \RuntimeException('ROS ros_wan_if 未配置，无法开管理 DNAT。');
+        $lan = $this->lanIf();
+        if ($wan === '' || $lan === '') {
+            throw new \RuntimeException('ROS ros_wan_if / ros_lan_if 未配置，无法开管理 DNAT。');
         }
         $tag = self::q(self::tag($serviceId) . ':dnat');
-        $this->exec('/ip firewall nat remove [find comment=' . $tag . ']'); // 幂等
-        $cmd = '/ip firewall nat add chain=dstnat action=dst-nat'
+        $this->exec('/ip firewall nat remove [find comment=' . $tag . ']'); // 幂等（清旧 dstnat+srcnat）
+        // 1) dstnat：公网:pubPort → iDRAC:targetPort，仅放行 WHMCS 源。
+        $this->exec('/ip firewall nat add chain=dstnat action=dst-nat'
             . ' protocol=tcp in-interface=' . $wan . ' dst-port=' . $pubPort
             . ' src-address=' . $srcAllow
             . ' to-addresses=' . $ipmiTarget . ' to-ports=' . $targetPort
-            . ' comment=' . $tag;
-        $this->exec($cmd);
+            . ' comment=' . $tag);
+        // 2) srcnat masquerade：让 iDRAC 看到的源是 ROS 内网口地址、就近回包；否则 iDRAC 回包走自己默认
+        //    网关（非 ROS）→ 永远回不到 WHMCS → curl HTTP 000。同一 :dnat 注释 → dnatClose 一并清除。
+        $this->exec('/ip firewall nat add chain=srcnat action=masquerade'
+            . ' protocol=tcp src-address=' . $srcAllow
+            . ' dst-address=' . $ipmiTarget . ' dst-port=' . $targetPort
+            . ' out-interface=' . $lan
+            . ' comment=' . $tag);
         return ['ok' => true, 'pubPort' => $pubPort, 'dryRun' => $this->dryRun];
     }
 

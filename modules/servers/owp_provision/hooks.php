@@ -69,7 +69,7 @@ add_hook('ClientAreaPage', 1, function ($vars) {
     }
     try {
         \OwpProvision\Schema::ensureTables();
-        $deviceId = ipd_hook_device_id((string) ($_GET['device'] ?? ''));
+        $deviceId = owpprov_hook_device_id((string) ($_GET['device'] ?? ''));
         if ($deviceId <= 0) {
             // 多设备且未指定节点 → 无法确定端口池。
             echo json_encode(['ok' => false, 'error' => 'no_device', 'ports' => []]);
@@ -86,7 +86,7 @@ add_hook('ClientAreaPage', 1, function ($vars) {
  * 把 AJAX 的 device 入参（id / dev{id} / 设备名）映射成设备 id；空且单设备 → 默认设备。
  * 自包含在 hooks（不依赖 server 模块函数已加载）。
  */
-function ipd_hook_device_id(string $sel): int
+function owpprov_hook_device_id(string $sel): int
 {
     $sel = trim($sel);
     if ($sel === '') {

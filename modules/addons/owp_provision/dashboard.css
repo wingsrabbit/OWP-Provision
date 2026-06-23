@@ -13,9 +13,10 @@
   --radius:9px; --radius-sm:6px;
   --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
-  font-family:var(--sans); color:var(--text); background:var(--bg);
+  font-family:var(--sans); color:var(--text); background:transparent;
   font-size:13px; line-height:1.45; -webkit-font-smoothing:antialiased;
-  min-height:100vh; padding:18px 22px 64px;
+  /* 嵌入 WHMCS 后台：不撑满视口、不抢全局背景（原整页设计的 min-height:100vh 会在后台页顶出大片空白）。 */
+  padding:2px 0 10px;
 }
 .owp *{box-sizing:border-box}
 .owp ::selection{background:#cfe0ff}

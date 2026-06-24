@@ -466,10 +466,22 @@ class Ipam
      */
     public static function pickFreeVpnIp(int $rosDeviceId): string
     {
+        // P3/P11：优先用 VPN 池组（purpose=vpn）按需发 /32，排除本端地址 /32（ros_l2tp_local）；
+        // 无池组则回退旧清单式 Resources vpn_ip（向后兼容）。
+        $group = Pools::findVpnGroup($rosDeviceId);
+        if ($group !== null && !empty(Pools::blocks((int) $group->id))) {
+            $exclude = [];
+            $dev   = Devices::get($rosDeviceId);
+            $local = $dev ? trim((string) ($dev->ros_l2tp_local ?? '')) : '';
+            if ($local !== '') {
+                $exclude[] = $local . '/32'; // 本端地址从可分配池排除，避免撞客户池（P3 取「排除」方案）
+            }
+            return Pools::allocate($group, 32, $exclude);
+        }
         foreach (Resources::freeItems($rosDeviceId, 'vpn_ip') as $r) {
             return (string) $r->value;
         }
-        throw new \RuntimeException('无空闲 VPN 客户地址。请在该 ROS 设备的资源页添加 vpn_ip 条目（如 10.0.1.0/24 切 /32）。');
+        throw new \RuntimeException('无空闲 VPN 客户地址。请为该 ROS 建 vpn 池组（母段如 10.0.0.0/25）或加 vpn_ip 资源条目。');
     }
 
     /**
@@ -483,9 +495,11 @@ class Ipam
     {
         $row      = self::getAllocation($serviceId);
         $existing = $row ? trim((string) (((array) $row)['vpn_ip'] ?? '')) : '';
+        // 复用条件：非空、未被其它在用服务占用（池组模式下地址不一定在 Resources 清单里，故放宽 inventory 检查：
+        // 池组成员或旧清单成员均可复用）。
         if ($existing !== ''
-            && self::vpnIpInInventory($rosDeviceId, $existing)
-            && !self::vpnIpHeldByOther($rosDeviceId, $existing, $serviceId)) {
+            && !self::vpnIpHeldByOther($rosDeviceId, $existing, $serviceId)
+            && (Pools::findVpnGroup($rosDeviceId) !== null || self::vpnIpInInventory($rosDeviceId, $existing))) {
             return $existing; // 复用本服务已有地址
         }
         return self::pickFreeVpnIp($rosDeviceId);

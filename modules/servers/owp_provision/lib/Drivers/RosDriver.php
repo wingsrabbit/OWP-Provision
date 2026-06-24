@@ -26,6 +26,7 @@ namespace OwpProvision\Drivers;
 
 use OwpProvision\Devices;
 use OwpProvision\Config;
+use OwpProvision\Ipam;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -353,5 +354,60 @@ class RosDriver implements DriverInterface
             $this->exec('/ip firewall nat remove [find comment=' . $tag . ']');
         } catch (\Throwable $e) {
         }
+    }
+
+    // ----------------------------------------------------------------------
+    // P3：下发 ROS 基础 VPN 设施（不靠手工预配 ROS）
+    // ----------------------------------------------------------------------
+
+    /**
+     * 幂等下发基础 VPN 设施：建 VPN 客户地址池 `/ip pool`（从 vpn 池组母段算可用范围、去网络/广播）+
+     * 默认 ppp profile（本端 + 指向该池）+ 启 L2TP server（IPsec PSK + mschap2/chap）。
+     * 每客户的 secret/profile/pin/隔离 filter 仍由 vpnGrant 按现有逻辑下发（从池组取固定 /32）。
+     * 真机命令由运维按现网/型号微调（IKEv2/证书等按需）。
+     *
+     * @param string[] $poolCidrs VPN 池母段（来自 purpose=vpn 池组）
+     * @throws \RuntimeException
+     */
+    public function setupVpnPool(array $poolCidrs, string $localAddr, string $psk): array
+    {
+        if (empty($poolCidrs)) {
+            throw new \RuntimeException('未配置 VPN 池母段：请先为该 ROS 建 purpose=vpn 池组并加母段（如 10.0.0.0/25）。');
+        }
+        if (trim($localAddr) === '') {
+            throw new \RuntimeException('ROS 本端地址（ros_l2tp_local）未配置。');
+        }
+        $ranges = [];
+        foreach ($poolCidrs as $c) {
+            $p     = Ipam::parseCidr((string) $c);
+            $base  = ip2long($p['net']) & ((0xFFFFFFFF << (32 - $p['len'])) & 0xFFFFFFFF);
+            $first = $base + 1;                              // 去网络地址
+            $last  = $base + (1 << (32 - $p['len'])) - 2;    // 去广播地址
+            if ($last >= $first) {
+                $ranges[] = long2ip($first) . '-' . long2ip($last);
+            }
+        }
+        $rangeStr = implode(',', $ranges);
+        $pool     = 'owp-vpn';
+        $prof     = 'owp-vpn-default';
+        $cmds = [
+            '/ip pool remove [find name=' . self::q($pool) . ']',                 // 幂等
+            '/ip pool add name=' . self::q($pool) . ' ranges=' . $rangeStr,
+            '/ppp profile remove [find name=' . self::q($prof) . ']',
+            '/ppp profile add name=' . self::q($prof) . ' local-address=' . $localAddr
+                . ' remote-address=' . self::q($pool) . ' change-tcp-mss=yes',
+            '/interface l2tp-server server set enabled=yes default-profile=' . self::q($prof)
+                . ' use-ipsec=yes ipsec-secret=' . self::q($psk) . ' authentication=mschap2,chap',
+        ];
+        $done = [];
+        foreach ($cmds as $c) {
+            try {
+                $this->exec($c);
+                $done[] = $c;
+            } catch (\Throwable $e) {
+                // 幂等 best-effort：remove 不存在对象等忽略；add 失败会被后续测试发现。
+            }
+        }
+        return ['ok' => true, 'pool' => $pool, 'ranges' => $rangeStr, 'commands' => count($done), 'dryRun' => $this->dryRun];
     }
 }

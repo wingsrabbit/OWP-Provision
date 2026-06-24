@@ -5,7 +5,11 @@
 
 ## [Unreleased]
 
-### 新增（v2.8 进行中）
+## [2.8.0] - 2026-06-24
+
+完整闭环真机测试（v2.7.0）通过后与用户对齐的优化集合 **P1–P11**：开通异步化、身份/IP 后台可配、设备/资源角色化、IPAM 池组重做。新增表 `jobs/lines/pool_groups/pool_blocks`（经 `ensureTables` 幂等创建）。新模型对旧装机**向后兼容**：IPAM 优先池组、无配置回退旧 Resources+carve；线路实体存在才走线路驱动、否则回退 `server.line`；vpn_ip 优先池组、否则回退旧 vpn_ip 资源。
+
+### 新增
 - **资源按设备角色 + 交付模型分类（P9）**：Resources 区按设备 driver/角色组织——`ros` 下只列 `vpn_ip`、`vrp` 下只列交付类（不再交换机区显 vpn_ip、ROS 区显 vlan/prefix）；`vrp` 交付资源再按交付模型分组 **XC（vlan+ptp+prefix）/ GRE（tunnel+loopback+acl+prefix）/ Server（vlan+prefix+port）**，重叠种类（vlan/prefix）在首个模型下渲染编辑 UI、其余模型标「共用」引用。设备标题带角色标签。脚注提示交付 prefix/vpn_ip 现主要走「线路 & IP 池组」。
 - **ROS 接入后由插件创建 VPN 池（P3）**：vpn_ip 不再只在 DB 记一段——`Ipam::pickFreeVpnIp` 改走 **purpose=vpn 的 IP 池组**（`Pools::findVpnGroup`，按需发 /32，**排除本端地址 `ros_l2tp_local` /32** 避免撞客户池），无池组回退旧 vpn_ip 资源。新增 **`RosDriver::setupVpnPool`**（幂等下发基础设施：`/ip pool`〔从 vpn 池组母段算可用范围、去网络/广播〕+ 默认 `ppp profile`〔本端+指向池〕+ 启 L2TP server〔IPsec PSK + mschap2/chap〕）+ 设备页「下发 ROS VPN 配置」动作（仅 ros 设备）。每客户 secret/profile/pin/隔离 filter 仍由 vpnGrant 从池组取固定 /32。真机命令由运维微调。
 - **线路与服务器解耦：line 归 IP/交付维度（P8 完整接线）**：`owpprov_create_server` 在客户所选线路存在线路实体（`Lines::byName`）时——**按线路的落地交换机选机**（`Servers::bindFreeOnDevice`，与 `server.line` 标签无关）+ **用该线路的交付池组发 IP**（`allocateServer` 传 `line_id` → `pickFreePrefix` → `Pools::findDeliveryGroup(line_id)`）。无线路实体时回退旧 `server.line` 逻辑（向后兼容）。`Servers` 新增 `bindFreeOnDevice/freeOnDevice`；`allocateServer` 加 `lineId` 参数。VPN/IPMI 的 vpn_ip 仍与线路无关（带外通道）。

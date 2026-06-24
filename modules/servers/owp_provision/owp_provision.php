@@ -30,6 +30,7 @@
 use WHMCS\Database\Capsule;
 use OwpProvision\Schema;
 use OwpProvision\Jobs;
+use OwpProvision\Lines;
 use OwpProvision\Config;
 use OwpProvision\Devices;
 use OwpProvision\Servers;
@@ -560,6 +561,8 @@ function owpprov_create_server(array $params)
         $serverSel    = owpprov_pluck_co($params, ['server', 'Server', '服务器'], '');
         $custTag      = Templates::custTag($namingPrefix, $serviceId, owpprov_client_name($params));
         $wantServerId = ctype_digit($serverSel) ? (int) $serverSel : 0;
+        // P8：线路实体（若已建）。有则按线路落地交换机选机、用线路池组发 IP；无则回退旧 server.line 标签逻辑。
+        $lineObj = $line !== '' ? Lines::byName($line) : null;
         // VPN 凭据 = WHMCS 服务 username/password；Other 类产品常无 username → 自动生成并存回服务（幂等，客户可一次性查看）
         [$vpnUser, $vpnPass] = owpprov_ensure_service_credentials($params);
 
@@ -569,10 +572,12 @@ function owpprov_create_server(array $params)
             return 'Error: 带宽档无法换算 CIR：' . $e->getMessage();
         }
 
-        return Orchestrator::withLock(function () use ($params, $serviceId, $bandwidth, $prefixSize, $custTag, $line, $wantServerId, $vpnUser, $vpnPass) {
-            // 1) 绑定空闲服务器（原子）
+        return Orchestrator::withLock(function () use ($params, $serviceId, $bandwidth, $prefixSize, $custTag, $line, $lineObj, $wantServerId, $vpnUser, $vpnPass) {
+            // 1) 绑定空闲服务器（原子）：有线路实体 → 按其落地交换机选机；否则回退按 server.line 标签。
             try {
-                $srv = Servers::bindFree($serviceId, $line, $wantServerId);
+                $srv = $lineObj
+                    ? Servers::bindFreeOnDevice($serviceId, (int) ($lineObj->device_id ?? 0), $wantServerId)
+                    : Servers::bindFree($serviceId, $line, $wantServerId);
             } catch (\Throwable $e) {
                 Orchestrator::log($serviceId, 'create_server', 'bind', null, 'failed', '', $e->getMessage());
                 return 'Error: 绑定服务器失败：' . $e->getMessage();
@@ -586,7 +591,7 @@ function owpprov_create_server(array $params)
 
             // 2) 在该服务器的固定端口分配并发 IP（server 直连模型：vlan + Vlanif 当网关 + port access + qos lr，无 PTP/route）
             try {
-                $alloc = Ipam::allocateServer($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $port);
+                $alloc = Ipam::allocateServer($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $port, $lineObj ? (int) $lineObj->id : null);
             } catch (\Throwable $e) {
                 Orchestrator::log($serviceId, 'create_server', 'allocate', $deviceId, 'failed', '', $e->getMessage());
                 Servers::releaseByService($serviceId);

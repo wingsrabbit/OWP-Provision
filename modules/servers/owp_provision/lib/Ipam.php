@@ -120,9 +120,9 @@ class Ipam
      * @param string $port 服务器 NIC 线缆到的固定端口（须为该设备 port 资源且空闲）
      * @throws \RuntimeException
      */
-    public static function allocateServer(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, string $port): array
+    public static function allocateServer(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, string $port, ?int $lineId = null): array
     {
-        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $prefixSize, $bandwidth, $port) {
+        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $prefixSize, $bandwidth, $port, $lineId) {
             $existing = self::lockAllocation($serviceId);
             if ($existing && $existing->status !== 'terminated') {
                 return (array) $existing; // 幂等复用
@@ -133,7 +133,7 @@ class Ipam
                 throw new \RuntimeException('服务器交付不支持 /32（需直连子网，请用 /30~/28，默认 /29）。');
             }
             $vlan    = self::pickFreeVlan($deviceId);
-            $prefix  = self::pickFreePrefix($deviceId, $maskLen);
+            $prefix  = self::pickFreePrefix($deviceId, $maskLen, $lineId); // P8/P11：线路驱动池组分配
             $portN   = self::pickFreePort($deviceId, $port); // 服务器固定口（须为该设备 port 资源且空闲）
 
             $row = [

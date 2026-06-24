@@ -816,38 +816,65 @@ function owpprov_admin_resources_panel(string $modulelink): string
 
     foreach ($devices as $dev) {
         $devId  = (int) $dev->id;
+        $driver = (string) ($dev->driver ?? 'vrp');
         $allocs = Resources::activeAllocations($devId);
         $total  = 0;
         $body   = '';
-        foreach ($kinds as $kind => $info) {
-            [$kLabel, $kHint] = $info;
-            $rows   = Resources::listByDevice($devId, $kind);
-            $total += count($rows);
-            $isCidr = in_array($kind, Resources::CIDR_KINDS, true);
-            $isInt  = in_array($kind, Resources::INT_KINDS, true);
-
-            $body .= '<div class="ipd-kind"><h5>' . htmlspecialchars($kLabel, ENT_QUOTES)
-                . ' <code>' . $kind . '</code> <small style="color:#aaa">' . count($rows) . '</small></h5>';
-            foreach ($rows as $r) {
-                $body .= owpprov_admin_resource_row($modulelink, $r, Resources::occupant($r, $allocs), $isCidr);
+        // P9：按设备角色 + 交付模型分组。ros 只列 vpn_ip；vrp 交付资源按 XC/GRE/Server 分组（重叠种类标共用，只渲一次）。
+        $groups = ($driver === 'ros')
+            ? ['VPN/IPMI（带外管理）' => ['vpn_ip']]
+            : [
+                'XC（IP transit）'         => ['vlan', 'ptp', 'prefix'],
+                'GRE'                      => ['tunnel', 'loopback', 'acl', 'prefix'],
+                'Server（独立服务器直连）' => ['vlan', 'prefix', 'port'],
+            ];
+        $kindModels = [];
+        foreach ($groups as $gl => $gk) {
+            foreach ($gk as $k) { $kindModels[$k][] = $gl; }
+        }
+        $shown = [];
+        foreach ($groups as $groupLabel => $groupKinds) {
+            $body .= '<div style="margin:10px 0 2px;font-weight:bold;color:#31708f;border-bottom:1px dashed #ddd">' . htmlspecialchars($groupLabel, ENT_QUOTES) . '</div>';
+            foreach ($groupKinds as $kind) {
+                if (!isset($kinds[$kind])) {
+                    continue;
+                }
+                if (isset($shown[$kind])) { // 共用种类：已在前面模型展示 → 一行引用，不重复编辑 UI
+                    $body .= '<div style="color:#888;font-size:12px;margin:2px 0 6px 10px">↳ <code>' . $kind . '</code>（共用，见上方「' . htmlspecialchars($shown[$kind], ENT_QUOTES) . '」）</div>';
+                    continue;
+                }
+                $shown[$kind] = $groupLabel;
+                [$kLabel, $kHint] = $kinds[$kind];
+                $rows   = Resources::listByDevice($devId, $kind);
+                $total += count($rows);
+                $isCidr = in_array($kind, Resources::CIDR_KINDS, true);
+                $isInt  = in_array($kind, Resources::INT_KINDS, true);
+                $share  = count($kindModels[$kind] ?? []) > 1
+                    ? ' <small style="color:#aaa">共用：' . htmlspecialchars(implode(' / ', $kindModels[$kind]), ENT_QUOTES) . '</small>' : '';
+                $body .= '<div class="ipd-kind"><h5>' . htmlspecialchars($kLabel, ENT_QUOTES)
+                    . ' <code>' . $kind . '</code> <small style="color:#aaa">' . count($rows) . '</small>' . $share . '</h5>';
+                foreach ($rows as $r) {
+                    $body .= owpprov_admin_resource_row($modulelink, $r, Resources::occupant($r, $allocs), $isCidr);
+                }
+                if (count($rows) === 0) {
+                    $body .= '<div style="color:#aaa;font-size:12px;margin:2px 0 6px">（无）</div>';
+                }
+                if (count($rows) > 0) {
+                    $body .= owpprov_admin_res_bulk_bar($kind);
+                }
+                $body .= owpprov_admin_res_forms($modulelink, $devId, $kind, $isCidr, $isInt, $kHint);
+                $body .= '</div>'; // ipd-kind
             }
-            if (count($rows) === 0) {
-                $body .= '<div style="color:#aaa;font-size:12px;margin:2px 0 6px">（无）</div>';
-            }
-            if (count($rows) > 0) {
-                $body .= owpprov_admin_res_bulk_bar($kind);
-            }
-            $body .= owpprov_admin_res_forms($modulelink, $devId, $kind, $isCidr, $isInt, $kHint);
-            $body .= '</div>'; // ipd-kind
         }
         $html .= '<details class="ipd-dev"' . ($dev === $devices[0] ? ' open' : '') . '><summary>设备 #' . $devId
             . '：' . htmlspecialchars((string) $dev->name, ENT_QUOTES)
+            . ' <small style="color:#31708f">[' . htmlspecialchars(owpprov_device_role_label($driver), ENT_QUOTES) . ']</small>'
             . ' <small style="color:#888">（' . $total . ' 条资源）</small></summary>' . $body . '</details>';
     }
 
-    $html .= '<p style="color:#888;margin-top:8px"><small>占用由分配**实时计算**（无需手工 exclude）；占用中条目锁定不可改/停/删，点「占用·服务#」跳客户页。'
-        . '保存即校验（格式/查重/重叠，不查上游）；不通过可点「⚠强制」绕过并留痕（活动日志）。'
-        . 'CIDR 类（PTP/Prefix/Loopback）掩码可在母段切分或手动添加时自选。</small></p>';
+    $html .= '<p style="color:#888;margin-top:8px"><small>资源按设备<strong>角色</strong>（交换机/VPN 网关）+ <strong>交付模型</strong>（XC/GRE/Server）分组；离散类（vlan/port/tunnel/acl）逐条管。'
+        . '占用由分配<strong>实时计算</strong>（无需手工 exclude）；占用中条目锁定不可改/停/删。保存即校验（格式/查重/重叠）；不通过可「⚠强制」绕过并留痕。'
+        . '<br>注：<strong>交付 prefix 与 VPN vpn_ip 现主要由上方「线路 &amp; IP 池组」面板管理</strong>（池组按需对齐分配、不预切）；此处 prefix/vpn_ip 清单为向后兼容保留。</small></p>';
     $html .= '</div>';
     return $html;
 }

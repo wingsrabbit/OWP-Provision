@@ -29,6 +29,8 @@ use OwpProvision\Ipam;
 use OwpProvision\Resources;
 use OwpProvision\Connection;
 use OwpProvision\Types;
+use OwpProvision\Pools;
+use OwpProvision\Lines;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -42,6 +44,8 @@ require_once $ipdLibDir . '/Devices.php';
 require_once $ipdLibDir . '/Servers.php';
 require_once $ipdLibDir . '/Types.php';
 require_once $ipdLibDir . '/Ipam.php';
+require_once $ipdLibDir . '/Pools.php';
+require_once $ipdLibDir . '/Lines.php';
 require_once $ipdLibDir . '/Resources.php';
 require_once $ipdLibDir . '/Templates.php';
 require_once $ipdLibDir . '/Connection.php';
@@ -221,6 +225,55 @@ function owp_provision_output($vars)
                     case 'res_bulk_delete':
                         $notice = owpprov_admin_res_bulk_delete();
                         break;
+                    // ---- 线路（P8）----
+                    case 'line_add':
+                        Lines::add(trim((string) ($_POST['name'] ?? '')), trim((string) ($_POST['descr'] ?? '')), (int) ($_POST['device_id'] ?? 0) ?: null);
+                        $notice = '已新增线路。';
+                        break;
+                    case 'line_save':
+                        Lines::update((int) ($_POST['id'] ?? 0), [
+                            'name' => trim((string) ($_POST['name'] ?? '')),
+                            'descr' => trim((string) ($_POST['descr'] ?? '')) ?: null,
+                            'device_id' => (int) ($_POST['device_id'] ?? 0) ?: null,
+                            'enabled' => !empty($_POST['enabled']) ? 1 : 0,
+                        ]);
+                        $notice = '已保存线路。';
+                        break;
+                    case 'line_delete':
+                        Lines::delete((int) ($_POST['id'] ?? 0));
+                        $notice = '已删除线路。';
+                        break;
+                    // ---- IP 池组（P11）----
+                    case 'pool_add':
+                        Pools::addGroup(trim((string) ($_POST['name'] ?? '')), (string) ($_POST['purpose'] ?? 'delivery'),
+                            (int) ($_POST['line_id'] ?? 0) ?: null, (int) ($_POST['device_id'] ?? 0) ?: null,
+                            (int) ($_POST['deliver_min'] ?? 26), (int) ($_POST['deliver_max'] ?? 30));
+                        $notice = '已新增 IP 池组。请展开添加原始母段。';
+                        break;
+                    case 'pool_save':
+                        Pools::updateGroup((int) ($_POST['id'] ?? 0), [
+                            'name' => trim((string) ($_POST['name'] ?? '')),
+                            'purpose' => (string) ($_POST['purpose'] ?? 'delivery') === 'vpn' ? 'vpn' : 'delivery',
+                            'line_id' => (int) ($_POST['line_id'] ?? 0) ?: null,
+                            'device_id' => (int) ($_POST['device_id'] ?? 0) ?: null,
+                            'deliver_min' => (int) ($_POST['deliver_min'] ?? 26),
+                            'deliver_max' => (int) ($_POST['deliver_max'] ?? 30),
+                            'enabled' => !empty($_POST['enabled']) ? 1 : 0,
+                        ]);
+                        $notice = '已保存 IP 池组。';
+                        break;
+                    case 'pool_delete':
+                        Pools::deleteGroup((int) ($_POST['id'] ?? 0));
+                        $notice = '已删除 IP 池组（含其母段）。';
+                        break;
+                    case 'poolblock_add':
+                        Pools::addBlock((int) ($_POST['group_id'] ?? 0), trim((string) ($_POST['cidr'] ?? '')));
+                        $notice = '已添加母段。';
+                        break;
+                    case 'poolblock_delete':
+                        Pools::deleteBlock((int) ($_POST['id'] ?? 0));
+                        $notice = '已删除母段。';
+                        break;
                     // ---- 分配（纠偏） ----
                     case 'alloc_release':
                         Ipam::release((int) ($_POST['serviceid'] ?? 0));
@@ -247,6 +300,7 @@ function owp_provision_output($vars)
 
     echo owpprov_admin_queue_panel($modulelink);
     echo owpprov_admin_devices_panel($modulelink);
+    echo owpprov_admin_lines_pools_panel($modulelink);
     echo owpprov_admin_servers_panel($modulelink);
     echo owpprov_admin_resources_panel($modulelink);
     echo owpprov_admin_allocations_panel($modulelink);
@@ -1357,6 +1411,112 @@ function owpprov_admin_status_badge(string $status): string
     $map = ['active' => ['#3c763d', '激活'], 'suspended' => ['#8a6d3b', '暂停'], 'terminated' => ['#777', '已销户']];
     [$color, $label] = $map[$status] ?? ['#333', $status];
     return '<span style="color:' . $color . ';font-weight:bold">' . htmlspecialchars($label, ENT_QUOTES) . '</span>';
+}
+
+/** 线路 + IP 池组管理面板（P8 线路实体 / P11 池组）。 */
+function owpprov_admin_lines_pools_panel(string $modulelink): string
+{
+    $url = htmlspecialchars($modulelink, ENT_QUOTES);
+    $tf  = owpprov_admin_token_field();
+    $vrp = [];
+    $ros = [];
+    foreach (Devices::all() as $d) {
+        if ((string) $d->driver === 'vrp') { $vrp[(int) $d->id] = (string) $d->name; }
+        if ((string) $d->driver === 'ros') { $ros[(int) $d->id] = (string) $d->name; }
+    }
+    $devName = $vrp + $ros;
+    $lines   = Lines::all();
+
+    $h  = '<div class="ipd-card"><h3>线路 &amp; IP 池组 / Lines &amp; IP Pools</h3>';
+    $h .= '<p style="color:#666;font-size:12px">线路=独立维度：决定交付哪段公网 IP（线路→交付池组）+ 落地交换机。'
+        . '池组只加<strong>原始母段</strong>（/25、/27… 任意混搭）+ 设交付掩码范围，切割<strong>全自动</strong>（不预切、释放不残碎）。</p>';
+
+    // ---- 线路 ----
+    $h .= '<h4>线路 / Lines</h4><table class="table table-condensed table-striped"><thead><tr>'
+        . '<th>ID</th><th>名称</th><th>说明</th><th>落地交换机</th><th>启用</th><th>操作</th></tr></thead><tbody>';
+    foreach ($lines as $l) {
+        $h .= '<tr><td>#' . (int) $l->id . '</td>'
+            . '<td><strong>' . htmlspecialchars((string) $l->name, ENT_QUOTES) . '</strong></td>'
+            . '<td><small>' . htmlspecialchars((string) ($l->descr ?? ''), ENT_QUOTES) . '</small></td>'
+            . '<td><small>' . htmlspecialchars($l->device_id ? ($devName[(int) $l->device_id] ?? ('#' . (int) $l->device_id)) : '—', ENT_QUOTES) . '</small></td>'
+            . '<td>' . ((int) $l->enabled === 1 ? '✅' : '—') . '</td>'
+            . '<td>' . owpprov_admin_mini_form($modulelink, 'line_delete', ['id' => (int) $l->id], '删除', 'btn-danger', '删除该线路？') . '</td></tr>';
+    }
+    if (!$lines) { $h .= '<tr><td colspan="6"><em>暂无线路。</em></td></tr>'; }
+    $h .= '</tbody></table>';
+    $vrpOpts = '<option value="">（落地交换机）</option>';
+    foreach ($vrp as $i => $nm) { $vrpOpts .= '<option value="' . $i . '">' . htmlspecialchars($nm, ENT_QUOTES) . '</option>'; }
+    $h .= '<details class="ipd-dev"><summary>＋ 新增线路 / Add Line</summary><form method="post" action="' . $url . '&action=line_add">' . $tf
+        . '<input type="hidden" name="action" value="line_add"/><div class="ipd-grid">'
+        . owpprov_field('name', '线路名 / Name', '', 'text', '如 HKBGP / HKBGP-CNBackBone')
+        . owpprov_field('descr', '说明(可选)', '', 'text', '路由属性备注')
+        . '<div class="ipd-f"><label>落地交换机 / Switch</label><select name="device_id" class="form-control">' . $vrpOpts . '</select></div>'
+        . '</div><div style="margin-top:8px"><button class="btn btn-primary">新增线路</button></div></form></details>';
+
+    // ---- 池组 ----
+    $h .= '<h4 style="margin-top:14px">IP 池组 / Pool Groups</h4>';
+    foreach (Pools::groups() as $g) {
+        $blocks = Pools::blocks((int) $g->id);
+        $lineNm = $g->line_id ? ('线路 ' . htmlspecialchars((string) (Lines::get((int) $g->line_id)?->name ?? ('#' . $g->line_id)), ENT_QUOTES)) : '—';
+        $devNm  = $g->device_id ? htmlspecialchars($devName[(int) $g->device_id] ?? ('#' . (int) $g->device_id), ENT_QUOTES) : '—';
+        $h .= '<details class="ipd-dev"><summary>#' . (int) $g->id . ' <strong>' . htmlspecialchars((string) $g->name, ENT_QUOTES) . '</strong> '
+            . '<small style="color:#888">[' . htmlspecialchars((string) $g->purpose, ENT_QUOTES) . ' · /' . (int) $g->deliver_min . '~/' . (int) $g->deliver_max
+            . ' · ' . $lineNm . ' · ' . $devNm . ' · 母段 ' . count($blocks) . ($g->enabled ? '' : ' · 停用') . ']</small></summary>';
+        $h .= '<table class="table table-condensed"><tbody>';
+        foreach ($blocks as $b) {
+            $h .= '<tr><td><code>' . htmlspecialchars((string) $b->cidr, ENT_QUOTES) . '</code></td><td style="width:60px">'
+                . owpprov_admin_mini_form($modulelink, 'poolblock_delete', ['id' => (int) $b->id], '删', 'btn-danger', '删除该母段？') . '</td></tr>';
+        }
+        if (!$blocks) { $h .= '<tr><td><em>未加母段——添加后才能从此组分配。</em></td></tr>'; }
+        $h .= '</tbody></table>';
+        $h .= '<form method="post" action="' . $url . '&action=poolblock_add" style="margin:6px 0">' . $tf
+            . '<input type="hidden" name="action" value="poolblock_add"/><input type="hidden" name="group_id" value="' . (int) $g->id . '"/>'
+            . '<input type="text" name="cidr" class="form-control input-sm" placeholder="原始母段，如 203.0.113.0/25" style="display:inline-block;width:240px"/> '
+            . '<button class="btn btn-default btn-sm">＋ 加母段</button></form>';
+        $h .= owpprov_admin_pool_form($modulelink, $g, $lines, $devName, $tf);
+        $h .= '<div style="margin-top:6px">' . owpprov_admin_mini_form($modulelink, 'pool_delete', ['id' => (int) $g->id], '删除整个池组', 'btn-danger', '删除该池组及其全部母段？') . '</div>';
+        $h .= '</details>';
+    }
+    $h .= '<details class="ipd-dev"><summary><strong>＋ 新增 IP 池组 / Add Pool Group</strong></summary>'
+        . owpprov_admin_pool_form($modulelink, null, $lines, $devName, $tf) . '</details>';
+
+    $h .= '</div>';
+    return $h;
+}
+
+/** 池组 新增/编辑 表单（$g=null 为新增）。 */
+function owpprov_admin_pool_form(string $modulelink, ?object $g, array $lines, array $devName, string $tf): string
+{
+    $url  = htmlspecialchars($modulelink, ENT_QUOTES);
+    $act  = $g ? 'pool_save' : 'pool_add';
+    $val  = static function (string $f, $d = '') use ($g) { return htmlspecialchars((string) ($g->{$f} ?? $d), ENT_QUOTES); };
+    $psel = static function (string $o) use ($g) { return (string) ($g->purpose ?? 'delivery') === $o ? ' selected' : ''; };
+    $lineOpts = '<option value="">（不绑线路 / 按设备）</option>';
+    foreach ($lines as $l) {
+        $s = ($g && (int) ($g->line_id ?? 0) === (int) $l->id) ? ' selected' : '';
+        $lineOpts .= '<option value="' . (int) $l->id . '"' . $s . '>' . htmlspecialchars((string) $l->name, ENT_QUOTES) . '</option>';
+    }
+    $devOpts = '<option value="">（落地设备：交付=交换机 / vpn=ROS）</option>';
+    foreach ($devName as $i => $nm) {
+        $s = ($g && (int) ($g->device_id ?? 0) === (int) $i) ? ' selected' : '';
+        $devOpts .= '<option value="' . (int) $i . '"' . $s . '>' . htmlspecialchars($nm, ENT_QUOTES) . '</option>';
+    }
+    $enChecked = (!$g || (int) ($g->enabled ?? 1) === 1) ? ' checked' : '';
+    $h  = '<form method="post" action="' . $url . '&action=' . $act . '" style="margin-top:6px">' . $tf
+        . '<input type="hidden" name="action" value="' . $act . '"/>';
+    if ($g) { $h .= '<input type="hidden" name="id" value="' . (int) $g->id . '"/>'; }
+    $h .= '<div class="ipd-grid">'
+        . owpprov_field('name', '池组名 / Name', $val('name'), 'text', '如 HK 交付池')
+        . '<div class="ipd-f"><label>用途 / Purpose</label><select name="purpose" class="form-control">'
+            . '<option value="delivery"' . $psel('delivery') . '>delivery（交付公网段）</option>'
+            . '<option value="vpn"' . $psel('vpn') . '>vpn（VPN 客户 /32）</option></select></div>'
+        . '<div class="ipd-f"><label>线路 / Line（交付）</label><select name="line_id" class="form-control">' . $lineOpts . '</select></div>'
+        . '<div class="ipd-f"><label>落地设备 / Device</label><select name="device_id" class="form-control">' . $devOpts . '</select></div>'
+        . owpprov_field('deliver_min', '最大块掩码 / min len（如 26）', $val('deliver_min', '26'), 'text', '允许最大块=最小掩码长度')
+        . owpprov_field('deliver_max', '最小块掩码 / max len（如 30）', $val('deliver_max', '30'), 'text', '允许最小块=最大掩码长度')
+        . '<div class="ipd-f"><label>启用 / Enabled</label><div><label class="ipd-chk"><input type="checkbox" name="enabled" value="1"' . $enChecked . '> 启用</label></div></div>'
+        . '</div><div style="margin-top:8px"><button class="btn btn-primary">' . ($g ? '保存池组' : '新增池组') . '</button></div></form>';
+    return $h;
 }
 
 function owpprov_admin_styles(): string

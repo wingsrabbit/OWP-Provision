@@ -331,8 +331,15 @@ class Ipam
      * @return string 'a.b.c.d/NN'
      * @throws \RuntimeException
      */
-    public static function pickFreePrefix(int $deviceId, int $maskLen): string
+    public static function pickFreePrefix(int $deviceId, int $maskLen, ?int $lineId = null): string
     {
+        // P11：优先用「池组」按需对齐分配（不预切、空闲实时算、无碎片）；该设备/线路无池组时回退旧
+        // 清单式 Resources + carve（向后兼容，平滑迁移）。线路驱动见 P8（lineId）。
+        $group = Pools::findDeliveryGroup($deviceId, $lineId);
+        if ($group !== null && !empty(Pools::blocks((int) $group->id))) {
+            return Pools::allocate($group, $maskLen);
+        }
+
         $free = Resources::freeItems($deviceId, 'prefix');
         // 1) 精确掩码命中（管理员已按该掩码预切的条目，优先用）
         foreach ($free as $r) {

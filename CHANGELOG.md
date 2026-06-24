@@ -6,6 +6,7 @@
 ## [Unreleased]
 
 ### 新增（v2.8 进行中）
+- **IPAM 重做：IP 池组 + 按需对齐分配（P11）+ 线路实体脚手架（P8）**：新表 `mod_owp_provision_pool_groups`（purpose=delivery|vpn、line_id、device_id、交付掩码范围 deliver_min/max）+ `mod_owp_provision_pool_blocks`（原始母段，admin 只加大段、**不预切**）+ `mod_owp_provision_lines`（线路实体：决定交付哪段 IP + 落地交换机）。`lib/Pools.php` 分配核心：**某组空闲 = 母段 − 全系统在用 allocation（CIDR 减法，实时算）**，下单要 /N（须在范围内）→ 找任一 /N 对齐且整块全空闲的区域命中（best-fit 小母段优先保大段）；释放即删 allocation、空闲自动恢复——**无碎片、无需 buddy 合并**（两块相邻空闲 /27 拼成的 /26 直接命中，解决旧 carve 单向切碎痛点）。`Ipam::pickFreePrefix` 优先走池组、无配置回退旧清单式 Resources+carve（向后兼容、平滑迁移）。后台新增「线路 & IP 池组」面板（线路/池组/母段 CRUD）。`lib/Lines.php` 线路 CRUD。越界掩码在分配时即拒。
 - **后台分区折叠 + 队列分页 + 占用默认隐藏已销户（P6/P7/P10）**：① 三大区（设备/服务器/资源 `.ipd-card`）与资源类（`.ipd-kind`）标题可点击折叠、默认折叠、状态记 localStorage（刷新保持；资源每设备本就是 `<details>`）。② 开通队列默认显 4 单、「展开」显 10 单、每页 10 单可翻页（前端分页）。③ 占用总览默认只显活跃分配，已销户默认隐藏（记录保留），顶部链接 `owp_show_term=1` 显示供对账。
 - **设备角色化 + 表单按角色显字段（P4/P5）**：Devices 列表加「角色」列（复用 driver：vrp=接入交换机、ros=VPN/IPMI 网关、drac=BMC，不加列）；设备编辑表单的 driver 下拉标注角色，且**按 driver 即时显隐 RouterOS 站点字段**（vrp 交换机隐藏 ROS 接口/VPN/PSK 等无关字段，ros 才显示）；服务器库存表单的设备下拉**按角色过滤**（交换机槽只列 vrp、ROS 槽只列 ros，避免选错）。
 - **VPN/iDRAC 用户名取客户 first name（P2）**：无 username 的 Other 产品不再生成 `svc<id>`，改用客户档案 `firstname` 派生——规范化（小写、`iconv//TRANSLIT` 去重音、只留 `[a-z0-9]`、封顶 16 字符 = iDRAC9 上限）；重名（tblhosting 在用服务已占）→ `base-<serviceid>` 消歧（全局唯一可追溯）；空/全非 ASCII（中文名）规范化后为空 → 回退 `svc<serviceid>`。最终用户名 + 随机密码仍写回 tblhosting（客户区一次性查看不变），已有 username 沿用不覆盖。

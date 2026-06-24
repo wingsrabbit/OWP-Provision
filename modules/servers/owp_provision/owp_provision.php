@@ -53,6 +53,8 @@ require_once __DIR__ . '/lib/Devices.php';
 require_once __DIR__ . '/lib/Servers.php';
 require_once __DIR__ . '/lib/Types.php';
 require_once __DIR__ . '/lib/Ipam.php';
+require_once __DIR__ . '/lib/Pools.php';
+require_once __DIR__ . '/lib/Lines.php';
 require_once __DIR__ . '/lib/Resources.php';
 require_once __DIR__ . '/lib/Templates.php';
 require_once __DIR__ . '/lib/Connection.php';

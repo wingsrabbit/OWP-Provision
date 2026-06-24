@@ -36,6 +36,9 @@ class Schema
     public const T_OPLOG       = 'mod_owp_provision_oplog';       // v2 编排器按步日志（保留 7 天）
     public const T_SERVERS     = 'mod_owp_provision_servers';     // v2 服务器库存（租赁/托管）
     public const T_JOBS        = 'mod_owp_provision_jobs';        // v2.8 异步开通队列（cron 处理）
+    public const T_POOL_GROUPS = 'mod_owp_provision_pool_groups'; // v2.8 IPAM 池组（purpose/line/device/范围）
+    public const T_POOL_BLOCKS = 'mod_owp_provision_pool_blocks'; // v2.8 池组里的原始母段（不预切）
+    public const T_LINES       = 'mod_owp_provision_lines';       // v2.8 线路实体（P8）
 
     /**
      * 幂等建全部表。返回简单结果数组，便于 addon `_activate()` 直接转成 WHMCS 期望格式。
@@ -54,10 +57,13 @@ class Schema
             self::createOplog();
             self::createServers();
             self::createJobs();
+            self::createLines();
+            self::createPoolGroups();
+            self::createPoolBlocks();
 
             return [
                 'status'      => 'success',
-                'description' => 'OWP Provision：9 张表已就绪（devices/pools/resources/allocations/config/log/oplog/servers/jobs）。',
+                'description' => 'OWP Provision：12 张表已就绪（含 v2.8 jobs/lines/pool_groups/pool_blocks）。',
             ];
         } catch (\Throwable $e) {
             return [
@@ -81,6 +87,9 @@ class Schema
         self::createOplog();
         self::createServers();
         self::createJobs();
+        self::createLines();
+        self::createPoolGroups();
+        self::createPoolBlocks();
         self::autoSeedResources(); // 安全网：升级后即使 _upgrade 未触发，也保证 resources 已从 pools 播种一次
     }
 
@@ -368,6 +377,70 @@ class Schema
             $t->timestamp('created_at')->nullable();
             $t->timestamp('updated_at')->nullable();
             $t->index('status');
+            $t->engine = 'InnoDB';
+        });
+    }
+
+    /**
+     * v2.8 线路实体（P8）：线路是独立维度，决定交付哪段公网 IP（线路↔池组）+ 落地交换机。
+     * 不再是服务器属性。客户下单选线路 → 用该线路池组发 IP、挑该交换机空闲机。
+     */
+    public static function createLines(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_LINES)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_LINES, function ($t) {
+            $t->increments('id');
+            $t->string('name', 64)->comment('线路名，如 HKBGP / HKBGP-CNBackBone');
+            $t->string('descr', 191)->nullable()->comment('说明/路由属性备注');
+            $t->unsignedInteger('device_id')->nullable()->comment('落地接入交换机 id（选机按此交换机空闲机）');
+            $t->tinyInteger('enabled')->default(1);
+            $t->timestamp('created_at')->nullable();
+            $t->timestamp('updated_at')->nullable();
+            $t->engine = 'InnoDB';
+        });
+    }
+
+    /**
+     * v2.8 IPAM 池组（P11）：admin 只管池组——往组里加原始母段 + 设对外交付掩码范围，切割全自动。
+     * purpose=delivery（交付公网段）|vpn（VPN 客户 /32）；line_id 关联线路（P8）；device_id=落地设备。
+     * deliver_min/max = 允许交付的掩码长度区间（如 /26~/29 存 26/29）。
+     */
+    public static function createPoolGroups(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_POOL_GROUPS)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_POOL_GROUPS, function ($t) {
+            $t->increments('id');
+            $t->string('name', 64);
+            $t->string('purpose', 12)->default('delivery')->comment('delivery|vpn');
+            $t->unsignedInteger('line_id')->nullable()->comment('关联线路（P8；delivery 用）');
+            $t->unsignedInteger('device_id')->nullable()->comment('落地设备（delivery=交换机 / vpn=ROS）');
+            $t->unsignedInteger('deliver_min')->default(26)->comment('允许最大块的掩码长度（含）');
+            $t->unsignedInteger('deliver_max')->default(30)->comment('允许最小块的掩码长度（含）');
+            $t->tinyInteger('enabled')->default(1);
+            $t->timestamp('created_at')->nullable();
+            $t->timestamp('updated_at')->nullable();
+            $t->index('purpose');
+            $t->engine = 'InnoDB';
+        });
+    }
+
+    /** v2.8 池组里的原始母段（P11）：admin 只加大段（/25、/27…任意混搭），不再物化 carve 碎片。 */
+    public static function createPoolBlocks(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_POOL_BLOCKS)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_POOL_BLOCKS, function ($t) {
+            $t->increments('id');
+            $t->unsignedInteger('group_id');
+            $t->string('cidr', 64)->comment('原始母段 a.b.c.d/NN');
+            $t->timestamp('created_at')->nullable();
+            $t->timestamp('updated_at')->nullable();
+            $t->index('group_id');
             $t->engine = 'InnoDB';
         });
     }

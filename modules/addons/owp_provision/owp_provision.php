@@ -467,6 +467,7 @@ function owpprov_admin_queue_panel(string $modulelink): string
         return $h . '</div></div>';
     }
 
+    $h .= '<div id="owp-orders">';
     foreach ($bySvc as $sid => $steps) {
         $steps = array_reverse($steps); // 时间升序
         $lastPhase = (string) end($steps)->phase;
@@ -538,6 +539,23 @@ function owpprov_admin_queue_panel(string $modulelink): string
         }
         $h .= '</ol></div></details>';
     }
+    $h .= '</div>'; // /owp-orders
+    // P7：默认显 4 单，「展开」显 10 单，每页 10 单可翻页（前端分页；最近活动倒序由 oplog id 决定）。
+    $h .= '<div class="owp-pager" style="display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px;color:var(--text-3)">'
+        . '<button type="button" id="owp-pg-expand" class="btn btn-default btn-xs">展开 (4→10)</button>'
+        . '<button type="button" id="owp-pg-prev" class="btn btn-default btn-xs">◀ 上一页</button>'
+        . '<span id="owp-pg-info"></span>'
+        . '<button type="button" id="owp-pg-next" class="btn btn-default btn-xs">下一页 ▶</button></div>';
+    $h .= "<script>(function(){var box=document.getElementById('owp-orders');if(!box)return;"
+        . "var items=[].slice.call(box.children),page=0,expanded=false;"
+        . "var info=document.getElementById('owp-pg-info'),prev=document.getElementById('owp-pg-prev'),next=document.getElementById('owp-pg-next'),exp=document.getElementById('owp-pg-expand');"
+        . "function ps(){return expanded?10:4;}"
+        . "function render(){var s=ps(),st=page*s;items.forEach(function(el,i){el.style.display=(i>=st&&i<st+s)?'':'none';});"
+        . "info.textContent=items.length?((st+1)+'-'+Math.min(st+s,items.length)+' / '+items.length+' 单'):'0 单';"
+        . "prev.disabled=page<=0;next.disabled=(st+s)>=items.length;}"
+        . "exp.onclick=function(){expanded=!expanded;page=0;exp.textContent=expanded?'收起 (10→4)':'展开 (4→10)';render();};"
+        . "prev.onclick=function(){if(page>0){page--;render();}};next.onclick=function(){if((page+1)*ps()<items.length){page++;render();}};"
+        . "render();})();</script>";
     return $h . '</div></div>';
 }
 
@@ -878,13 +896,22 @@ function owpprov_admin_service_uid(int $serviceId): int
 function owpprov_admin_allocations_panel(string $modulelink): string
 {
     $devices = Devices::all();
-    $html  = '<div class="ipd-card"><h3>占用总览 / Allocations（按设备 + 类型）</h3>';
+    // P10：默认只显活跃；已销户默认隐藏（记录保留），GET owp_show_term=1 显示供对账。
+    $showTerm = !empty($_GET['owp_show_term']);
+    $toggleUrl = htmlspecialchars($modulelink . ($showTerm ? '' : '&owp_show_term=1') . '#owp-alloc', ENT_QUOTES);
+    $html  = '<div class="ipd-card" id="owp-alloc"><h3>占用总览 / Allocations（按设备 + 类型）'
+        . ' <small style="font-weight:normal"><a href="' . $toggleUrl . '">'
+        . ($showTerm ? '隐藏已销户 / hide terminated' : '显示已销户 / show terminated') . '</a></small></h3>';
+    if (!$showTerm) {
+        $html .= '<p style="color:#888;font-size:12px;margin:0 0 6px">仅显示活跃分配；已销户记录已隐藏（点上方链接查看，记录保留不删）。</p>';
+    }
 
     $deviceIds = [];
     $total = 0;
     foreach ($devices as $dev) {
         $deviceIds[] = (int) $dev->id;
         $rows = Capsule::table(Schema::T_ALLOCATIONS)->where('device_id', (int) $dev->id)
+            ->when(!$showTerm, function ($q) { return $q->where('status', '!=', 'terminated'); })
             ->orderBy('delivery_type')->orderByDesc('id')->limit(1000)->get();
         $total += count($rows);
         $html .= '<h4 style="margin-top:12px">设备 #' . (int) $dev->id . '：' . htmlspecialchars((string) $dev->name, ENT_QUOTES)
@@ -895,6 +922,7 @@ function owpprov_admin_allocations_panel(string $modulelink): string
     // 孤儿：device_id 不在现有设备（设备被删但仍有记录 / 迁移异常）
     $orphans = Capsule::table(Schema::T_ALLOCATIONS)
         ->when(!empty($deviceIds), function ($q) use ($deviceIds) { return $q->whereNotIn('device_id', $deviceIds); })
+        ->when(!$showTerm, function ($q) { return $q->where('status', '!=', 'terminated'); })
         ->orderByDesc('id')->limit(500)->get();
     if (count($orphans) > 0) {
         $html .= '<h4 style="margin-top:12px;color:#a94442">未知/已删除设备 <small>（' . count($orphans) . '）</small></h4>';
@@ -1355,5 +1383,18 @@ function owpprov_admin_styles(): string
         .ipd-src{display:inline-block;font-size:10px;color:#888;border:1px solid #ddd;border-radius:3px;padding:0 4px}
         .ipd-src-auto{color:#31708f;border-color:#bce8f1}
         .ipd-formlabel{display:inline-block;min-width:70px;color:#555;font-size:12px}
-    </style>';
+        .ipd-card>h3,.ipd-kind>h5{user-select:none}
+    </style>'
+    // P6：层级可折叠——三大区(.ipd-card h3) + 资源类(.ipd-kind h5) 默认折叠、点标题展开，状态记 localStorage。
+    . "<script>document.addEventListener('DOMContentLoaded',function(){"
+    . "var LS=window.localStorage;function gs(k,d){try{var v=LS.getItem(k);return v===null?d:v==='1';}catch(e){return d;}}"
+    . "function ss(k,v){try{LS.setItem(k,v?'1':'0');}catch(e){}}"
+    . "function mk(head,key,def){var rest=[],n=head.nextSibling;while(n){var x=n.nextSibling;rest.push(n);n=x;}"
+    . "var body=document.createElement('div');rest.forEach(function(t){body.appendChild(t);});head.parentNode.insertBefore(body,head.nextSibling);"
+    . "var open=gs(key,def),c=document.createElement('span');c.style.cssText='cursor:pointer;margin-right:6px;color:#999;font-size:11px';head.insertBefore(c,head.firstChild);head.style.cursor='pointer';"
+    . "function ap(){body.style.display=open?'':'none';c.textContent=open?'▾':'▸';}"
+    . "head.addEventListener('click',function(e){var t=e.target.tagName;if(t==='A'||t==='INPUT'||t==='BUTTON'||t==='SELECT')return;open=!open;ss(key,open);ap();});ap();}"
+    . "[].slice.call(document.querySelectorAll('.ipd-card')).forEach(function(cd){var h=cd.querySelector(':scope>h3');if(h)mk(h,'owpc:'+(h.textContent||'').slice(0,40),false);});"
+    . "[].slice.call(document.querySelectorAll('.ipd-kind')).forEach(function(kc){var h=kc.querySelector(':scope>h5');if(h)mk(h,'owpk:'+(kc.textContent||'').slice(0,50),false);});"
+    . "});</script>";
 }

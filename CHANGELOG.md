@@ -6,6 +6,7 @@
 ## [Unreleased]
 
 ### 新增（v2.8 进行中）
+- **VPN/iDRAC 用户名取客户 first name（P2）**：无 username 的 Other 产品不再生成 `svc<id>`，改用客户档案 `firstname` 派生——规范化（小写、`iconv//TRANSLIT` 去重音、只留 `[a-z0-9]`、封顶 16 字符 = iDRAC9 上限）；重名（tblhosting 在用服务已占）→ `base-<serviceid>` 消歧（全局唯一可追溯）；空/全非 ASCII（中文名）规范化后为空 → 回退 `svc<serviceid>`。最终用户名 + 随机密码仍写回 tblhosting（客户区一次性查看不变），已有 username 沿用不覆盖。
 - **开通异步化（P1）**：客户下单/结账点 Complete Order 后不再卡 ~15s 等 SSH 编排。`CreateAccount` 非 worker 上下文时**入队即返回**（新表 `mod_owp_provision_jobs`：一服务一行，payload=加密序列化的 `$params`），`AfterCronJob`（每个系统 cron 周期、推荐每 5 分钟）扫队列逐单跑真机编排——worker 把 `$GLOBALS['__owp_async_run']` 置为该 serviceid 后**直接重入 `CreateAccount`**（非 `ModuleCreate`，避免重发欢迎邮件），沿用 `Orchestrator` 全局锁串行 + 失败回滚，失败 3 次内自动重试。客户区在 `queued/running` 时显示「开通中…」+ 当前步骤（读 oplog），`done` 显交付信息、`failed` 提示联系客服。cron 顺手 purge 7 天前 oplog。
 
 ## [2.7.0] - 2026-06-23

@@ -142,6 +142,61 @@ class Servers
         });
     }
 
+    /**
+     * P8：按「落地接入交换机 device_id」原子绑定一台空闲服务器（线路驱动选机，与 server.line 标签无关）。
+     * @throws \RuntimeException 无可用 / 指定不可用
+     */
+    public static function bindFreeOnDevice(int $serviceId, int $deviceId, int $wantId = 0): object
+    {
+        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $wantId) {
+            $exist = Capsule::table(Schema::T_SERVERS)->where('serviceid', $serviceId)->lockForUpdate()->first();
+            if ($exist) {
+                return $exist; // 幂等
+            }
+            if ($wantId > 0) {
+                $s = Capsule::table(Schema::T_SERVERS)->where('id', $wantId)->lockForUpdate()->first();
+                if (!$s) {
+                    throw new \RuntimeException('指定服务器 #' . $wantId . ' 不存在。');
+                }
+                if ((string) $s->status !== 'free' || $s->serviceid !== null) {
+                    throw new \RuntimeException('指定服务器 #' . $wantId . ' 不空闲。');
+                }
+                if ($deviceId > 0 && (int) $s->device_id !== $deviceId) {
+                    throw new \RuntimeException('指定服务器不在该线路的落地交换机上。');
+                }
+            } else {
+                $q = Capsule::table(Schema::T_SERVERS)->where('status', 'free')->whereNull('serviceid');
+                if ($deviceId > 0) {
+                    $q->where('device_id', $deviceId);
+                }
+                $s = $q->orderBy('id')->lockForUpdate()->first();
+                if (!$s) {
+                    throw new \RuntimeException('该线路落地交换机上无空闲服务器可分配。');
+                }
+            }
+            Capsule::table(Schema::T_SERVERS)->where('id', (int) $s->id)->update([
+                'status' => 'rented', 'serviceid' => $serviceId, 'updated_at' => date('Y-m-d H:i:s'),
+            ]);
+            $s->status    = 'rented';
+            $s->serviceid = $serviceId;
+            return $s;
+        });
+    }
+
+    /** P8：某落地交换机上的空闲服务器（device_id=0 不限）。用于库存计数/校验。 */
+    public static function freeOnDevice(int $deviceId): array
+    {
+        try {
+            $q = Capsule::table(Schema::T_SERVERS)->where('status', 'free')->whereNull('serviceid');
+            if ($deviceId > 0) {
+                $q->where('device_id', $deviceId);
+            }
+            return $q->orderBy('id')->get()->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
     /** 释放某服务占用的服务器（回到 free）。 */
     public static function releaseByService(int $serviceId): void
     {

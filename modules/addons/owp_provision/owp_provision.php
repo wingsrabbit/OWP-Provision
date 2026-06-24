@@ -256,6 +256,16 @@ function owp_provision_output($vars)
 // 面板：设备 / Devices
 // ============================================================================
 
+/** 设备角色标签（复用 driver 即角色，P4，不加列）：vrp=接入交换机 / ros=VPN·IPMI 网关 / drac=BMC。 */
+function owpprov_device_role_label(string $driver): string
+{
+    switch (strtolower($driver)) {
+        case 'ros':  return 'VPN/IPMI 网关';
+        case 'drac': return 'BMC';
+        default:     return '接入交换机';
+    }
+}
+
 function owpprov_admin_devices_panel(string $modulelink): string
 {
     $devices = Devices::all();
@@ -267,13 +277,14 @@ function owpprov_admin_devices_panel(string $modulelink): string
 
     // 列表
     $html .= '<table class="table table-condensed table-striped"><thead><tr>'
-        . '<th>ID</th><th>名称</th><th>模式</th><th>设备</th><th>跳板</th><th>写账号</th><th>启用</th><th>在用分配</th>'
+        . '<th>ID</th><th>名称</th><th>角色 / Role</th><th>模式</th><th>设备</th><th>跳板</th><th>写账号</th><th>启用</th><th>在用分配</th>'
         . '</tr></thead><tbody>';
     foreach ($devices as $d) {
         $active = Devices::hasActiveAllocations((int) $d->id);
         $html .= '<tr>'
             . '<td>#' . (int) $d->id . '</td>'
             . '<td><strong>' . htmlspecialchars((string) $d->name, ENT_QUOTES) . '</strong></td>'
+            . '<td><small>' . htmlspecialchars(owpprov_device_role_label((string) ($d->driver ?? 'vrp')), ENT_QUOTES) . '（' . htmlspecialchars((string) ($d->driver ?? 'vrp'), ENT_QUOTES) . '）</small></td>'
             . '<td>' . htmlspecialchars((string) $d->conn_mode, ENT_QUOTES) . '</td>'
             . '<td><small>' . htmlspecialchars(((string) $d->device_host) . ':' . ((string) $d->device_port), ENT_QUOTES) . '</small></td>'
             . '<td><small>' . ((string) $d->conn_mode === 'jump' ? htmlspecialchars(((string) $d->jump_host) . ':' . ((string) $d->jump_port), ENT_QUOTES) : '—') . '</small></td>'
@@ -283,7 +294,7 @@ function owpprov_admin_devices_panel(string $modulelink): string
             . '</tr>';
     }
     if (count($devices) === 0) {
-        $html .= '<tr><td colspan="8"><em>暂无设备。请用下方表单新增第一台。</em></td></tr>';
+        $html .= '<tr><td colspan="9"><em>暂无设备。请用下方表单新增第一台。</em></td></tr>';
     }
     $html .= '</tbody></table>';
 
@@ -350,9 +361,9 @@ function owpprov_admin_device_form(string $modulelink, ?object $d): string
     $h .= '<div class="ipd-grid">';
     // 非敏感（明文 text）
     $h .= owpprov_field('name', '名称 / Name', $v('name'), 'text', '如 Edge-A');
-    $h .= '<div class="ipd-f"><label>设备类型 / Driver</label><select name="driver" class="form-control">'
-        . '<option value="vrp"' . $driverSel('vrp') . '>vrp（华为 VRP 交换机）</option>'
-        . '<option value="ros"' . $driverSel('ros') . '>ros（MikroTik RouterOS / VPN）</option>'
+    $h .= '<div class="ipd-f"><label>设备类型 / Driver（角色）</label><select name="driver" id="owp-driver-select" class="form-control">'
+        . '<option value="vrp"' . $driverSel('vrp') . '>vrp — 接入交换机 / Access switch</option>'
+        . '<option value="ros"' . $driverSel('ros') . '>ros — VPN/IPMI 网关 / VPN·IPMI gateway</option>'
         . '</select></div>';
     $h .= '<div class="ipd-f"><label>启用 / Enabled</label><div><label class="ipd-chk"><input type="checkbox" name="enabled" value="1"' . $enabledChecked . '> 启用</label></div></div>';
     $h .= '<div class="ipd-f"><label>连接方式 / Mode</label><select name="conn_mode" class="form-control">'
@@ -382,8 +393,9 @@ function owpprov_admin_device_form(string $modulelink, ?object $d): string
         . '<textarea name="jumpKeyText" class="form-control" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----" style="font-family:monospace;font-size:12px">' . $keyText . '</textarea>'
         . '<small style="color:#888">连接时仅在内存使用、不落盘。保存即覆盖；清空=清除。RouterOS(ros) 用同一把私钥登录也填这里。</small></div>';
 
-    // ROS（driver=ros）站点字段：仅 RouterOS 设备用；白标。
-    $h .= '<div style="margin-top:8px;color:#31708f;font-size:12px">RouterOS（driver=ros）站点字段：</div>';
+    // ROS（driver=ros）站点字段：仅 RouterOS / VPN·IPMI 网关用。交换机(vrp)无关 → 按角色显隐(P5)。
+    $h .= '<div id="owp-ros-fields">';
+    $h .= '<div style="margin-top:8px;color:#31708f;font-size:12px">RouterOS（VPN/IPMI 网关）站点字段：</div>';
     $h .= '<div class="ipd-grid">';
     $h .= owpprov_field('ros_lan_if', 'ROS 内网接口 / LAN if', $v('ros_lan_if'), 'text', 'IPMI 侧接口名，如 lan-edge');
     $h .= owpprov_field('ros_wan_if', 'ROS 公网接口 / WAN if', $v('ros_wan_if'), 'text', '如 wan-uplink');
@@ -391,11 +403,14 @@ function owpprov_admin_device_form(string $modulelink, ?object $d): string
     $h .= owpprov_field('ros_pub_host', 'VPN 公网地址(客户连)', $v('ros_pub_host'), 'text', '客户连 VPN 的公网主机名/地址，可填域名；空=回退连接 IP');
     $h .= owpprov_field('ros_ikev2_peer', 'IKEv2 peer 名(可选)', $v('ros_ikev2_peer'), 'text', '全局 IKEv2 peer；空=不开 IKEv2');
     $h .= owpprov_field('ros_ipsec_psk', 'IPsec PSK', $sec('ros_ipsec_psk'), 'password', 'L2TP/IPsec 共享密钥（加密存）');
-    $h .= '</div>';
+    $h .= '</div></div>'; // /owp-ros-fields
 
     $h .= '<div style="margin-top:10px"><button class="btn btn-primary" type="submit">'
         . ($isNew ? '新增设备 / Create Device' : '保存设备 / Save Device') . '</button></div>';
     $h .= '</form>';
+    // P5：按 driver 即时显隐 RouterOS 字段块（vrp 交换机隐藏；ros 显示）。
+    $h .= "<script>(function(){var s=document.getElementById('owp-driver-select'),r=document.getElementById('owp-ros-fields');"
+        . "if(!s||!r)return;function t(){r.style.display=(s.value==='ros')?'':'none';}s.addEventListener('change',t);t();})();</script>";
     return $h;
 }
 
@@ -593,16 +608,18 @@ function owpprov_admin_server_form(string $modulelink, ?object $s): string
     $v = static function (string $f, string $def = '') use ($s): string {
         return htmlspecialchars((string) ($s->{$f} ?? $def), ENT_QUOTES);
     };
-    // 设备下拉（交换机 vrp / ROS）
+    // 设备下拉按角色过滤（P4）：交换机槽只列 vrp、ROS 槽只列 ros，避免选错。
     $devOpts = '';
     $rosOpts = '<option value="">（无 / 不开 VPN）</option>';
     foreach (Devices::all() as $d) {
         $sel  = (!$isNew && (int) $s->device_id === (int) $d->id) ? ' selected' : '';
         $rsel = (!$isNew && (int) ($s->vpn_device_id ?? 0) === (int) $d->id) ? ' selected' : '';
-        $label = htmlspecialchars($d->name . '（' . $d->driver . '）', ENT_QUOTES);
-        $devOpts .= '<option value="' . (int) $d->id . '"' . $sel . '>' . $label . '</option>';
-        if ((string) $d->driver === 'ros') {
-            $rosOpts .= '<option value="' . (int) $d->id . '"' . $rsel . '>' . htmlspecialchars((string) $d->name, ENT_QUOTES) . '</option>';
+        $nm   = htmlspecialchars((string) $d->name, ENT_QUOTES);
+        if ((string) $d->driver === 'vrp') { // 接入交换机
+            $devOpts .= '<option value="' . (int) $d->id . '"' . $sel . '>' . $nm . '</option>';
+        }
+        if ((string) $d->driver === 'ros') { // VPN/IPMI 网关
+            $rosOpts .= '<option value="' . (int) $d->id . '"' . $rsel . '>' . $nm . '</option>';
         }
     }
     $ikSel = static function (string $opt) use ($s): string {

@@ -1327,7 +1327,7 @@ function owpprov_ensure_service_credentials(array $params): array
 
     $update = [];
     if ($user === '') {
-        $user           = 'svc' . $serviceId;          // 确定性 + 唯一 + ppp/iDRAC 安全字符
+        $user           = owpprov_derive_username($params, $serviceId); // 取客户 first name（规范化+消歧+兜底）
         $update['username'] = $user;
     }
     if ($pass === '') {
@@ -1354,6 +1354,55 @@ function owpprov_ensure_service_credentials(array $params): array
         }
     }
     return [$user, $pass];
+}
+
+/**
+ * 派生 VPN/iDRAC 用户名 = 客户下单填的 first name（规范化 + 唯一性消歧 + 兜底）。
+ * 规范化：小写、去重音、只留 [a-z0-9]、封顶 16 字符（iDRAC9 用户名上限，RouterOS ppp 也安全）。
+ * 唯一性：base 被其它在用服务占用 → `base-{serviceid}`（全局唯一可追溯）。空/全非 ASCII → `svc{serviceid}`。
+ */
+function owpprov_derive_username(array $params, int $serviceId): string
+{
+    $max   = 16; // iDRAC9 UserName 上限
+    $cd    = $params['clientsdetails'] ?? [];
+    $first = is_array($cd) ? (string) ($cd['firstname'] ?? '') : '';
+    $base  = owpprov_normalize_username($first, $max);
+    if ($base === '') {
+        return 'svc' . $serviceId; // 空/中文名规范化后为空 → 兜底
+    }
+    if (owpprov_username_taken($base, $serviceId)) {
+        $suffix = '-' . $serviceId;
+        $base   = substr($base, 0, max(1, $max - strlen($suffix))) . $suffix; // 留位给后缀，总长 ≤ max
+    }
+    return $base;
+}
+
+/** 规范化名字为账号安全串：小写 + 去重音(iconv//TRANSLIT) + 只留 [a-z0-9] + 封顶。 */
+function owpprov_normalize_username(string $name, int $max = 16): string
+{
+    $name = strtolower(trim($name));
+    if ($name !== '' && function_exists('iconv')) {
+        $t = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $name); // é→e、ü→u…；中文→空
+        if ($t !== false) {
+            $name = $t;
+        }
+    }
+    $name = (string) preg_replace('/[^a-z0-9]/', '', strtolower($name));
+    return substr($name, 0, $max);
+}
+
+/** 该用户名是否被「其它在用服务」占用（tblhosting.username，排除已销/取消，便于回收旧名）。 */
+function owpprov_username_taken(string $base, int $exceptServiceId): bool
+{
+    try {
+        return Capsule::table('tblhosting')
+            ->where('username', $base)
+            ->where('id', '!=', $exceptServiceId)
+            ->whereIn('domainstatus', ['Active', 'Pending', 'Suspended'])
+            ->exists();
+    } catch (\Throwable $e) {
+        return false;
+    }
 }
 
 /** 生成强随机密码（去除易混淆字符 0/O/1/l/I）。 */

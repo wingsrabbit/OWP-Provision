@@ -188,6 +188,10 @@ function owp_provision_output($vars)
                         [$ok, $msg] = owpprov_admin_device_test((int) ($_POST['id'] ?? 0));
                         if ($ok) { $notice = '连接测试通过：' . $msg; } else { $err = '连接测试失败：' . $msg; }
                         break;
+                    case 'device_setup_vpn': // P3：下发 ROS 基础 VPN 配置
+                        [$ok, $msg] = owpprov_admin_device_setup_vpn((int) ($_POST['id'] ?? 0));
+                        if ($ok) { $notice = 'ROS 基础 VPN 配置已下发：' . $msg; } else { $err = '下发失败：' . $msg; }
+                        break;
                     // ---- 服务器库存 ----
                     case 'server_add':
                         $sid = owpprov_admin_server_add();
@@ -360,6 +364,9 @@ function owpprov_admin_devices_panel(string $modulelink): string
         $html .= '<div style="margin-top:8px">'
             . owpprov_admin_mini_form($modulelink, 'device_test', ['id' => (int) $d->id], 'Test Connection（写账号→display version）', 'btn-default')
             . ' '
+            . ((string) ($d->driver ?? '') === 'ros'
+                ? owpprov_admin_mini_form($modulelink, 'device_setup_vpn', ['id' => (int) $d->id], '下发 ROS VPN 配置', 'btn-default', '幂等下发 /ip pool + 默认 profile + L2TP server（用该 ROS 的 vpn 池组母段）。确认下发？') . ' '
+                : '')
             . owpprov_admin_mini_form($modulelink, 'device_toggle', ['id' => (int) $d->id], (int) $d->enabled === 1 ? '停用设备' : '启用设备', 'btn-default')
             . ' '
             . owpprov_admin_mini_form($modulelink, 'device_delete', ['id' => (int) $d->id], '删除设备', 'btn-danger', '确认删除该设备？（有在用分配会被拒绝）')
@@ -1133,6 +1140,36 @@ function owpprov_admin_device_test(int $id): array
     }
     logModuleCall('owp_provision', 'AddonDeviceTest', ['device_id' => $id, 'driver' => $dev->driver ?? 'vrp'], $res['output'] ?? '', $res['error'] ?? '');
     return [(bool) ($res['ok'] ?? false), ($res['ok'] ?? false) ? mb_substr(trim((string) ($res['output'] ?? '')), 0, 200) : (string) ($res['error'] ?? '')];
+}
+
+/** P3：下发 ROS 基础 VPN 配置（建 /ip pool + 默认 profile + 启 L2TP server+PSK）。用该 ROS 的 vpn 池组母段。 */
+function owpprov_admin_device_setup_vpn(int $id): array
+{
+    $dev = Devices::get($id);
+    if (!$dev || (string) ($dev->driver ?? '') !== 'ros') {
+        return [false, '仅 ROS（VPN/IPMI 网关）设备可下发 VPN 配置。'];
+    }
+    $group = Pools::findVpnGroup($id);
+    if (!$group) {
+        return [false, '请先为该 ROS 建 purpose=vpn 的 IP 池组并加母段（如 10.0.0.0/25）。'];
+    }
+    $cidrs = [];
+    foreach (Pools::blocks((int) $group->id) as $b) {
+        $cidrs[] = (string) $b->cidr;
+    }
+    if (!$cidrs) {
+        return [false, '该 vpn 池组未加母段。'];
+    }
+    $local = trim((string) ($dev->ros_l2tp_local ?? ''));
+    $psk   = Config::deviceSecret($id, 'ros_ipsec_psk');
+    try {
+        $drv = new \OwpProvision\Drivers\RosDriver($id, Config::globalDryRun());
+        $r   = $drv->setupVpnPool($cidrs, $local, $psk);
+        logModuleCall('owp_provision', 'AddonRosVpnSetup', ['device_id' => $id, 'ranges' => $r['ranges'] ?? ''], 'ok', '');
+        return [true, 'pool=' . ($r['pool'] ?? '') . ' ranges=' . ($r['ranges'] ?? '') . (!empty($r['dryRun']) ? '（全局 dry-run，未真下发）' : '')];
+    } catch (\Throwable $e) {
+        return [false, $e->getMessage()];
+    }
 }
 
 // ============================================================================

@@ -29,6 +29,7 @@
 
 use WHMCS\Database\Capsule;
 use OwpProvision\Schema;
+use OwpProvision\Jobs;
 use OwpProvision\Config;
 use OwpProvision\Devices;
 use OwpProvision\Servers;
@@ -56,6 +57,7 @@ require_once __DIR__ . '/lib/Resources.php';
 require_once __DIR__ . '/lib/Templates.php';
 require_once __DIR__ . '/lib/Connection.php';
 require_once __DIR__ . '/lib/Orchestrator.php';
+require_once __DIR__ . '/lib/Jobs.php';
 require_once __DIR__ . '/lib/Drivers/DriverInterface.php';
 require_once __DIR__ . '/lib/Drivers/VrpDriver.php';
 require_once __DIR__ . '/lib/Drivers/RosDriver.php';
@@ -149,6 +151,15 @@ function owp_provision_CreateAccount(array $params)
         Schema::ensureTables();
         if ($serviceId <= 0) {
             return 'Error: 缺少 serviceid（无法分配/记录）。请先 logModuleCall 检查 $params。';
+        }
+
+        // P1 异步开通：非 worker 上下文（客户下单/结账的同步请求）→ **入队即返回**，避免 SSH 编排卡住 HTTP
+        // ~15s。cron(AfterCronJob) 取队列时把 $GLOBALS['__owp_async_run'] 置为本 serviceid 再重入本函数，
+        // 那一次才真跑下面的编排。worker 直接调本函数（非 ModuleCreate）→ 不会重发欢迎邮件。
+        if ((int) ($GLOBALS['__owp_async_run'] ?? 0) !== $serviceId) {
+            Jobs::enqueue($serviceId, 'create', $params);
+            Orchestrator::log($serviceId, 'create', 'queue', null, 'queued', '', '已入队，后台开通中（每个 cron 周期处理）');
+            return 'success';
         }
 
         // 服务形态分流：server=租赁/托管（绑服务器+发IP+开 IPMI VPN）；否则走纯 IP 交付（XC/GRE）。
@@ -713,10 +724,30 @@ function owp_provision_ClientArea(array $params)
         'idracUrl'     => '',
         'idracUser'    => '',
         'idracBuilt'   => false,
+        // P1 异步开通进度
+        'provisioning' => false,
+        'provStep'     => '',
     ];
 
     try {
         Schema::ensureTables();
+
+        // P1：开通可能仍在后台队列里跑——优先展示「开通中…」而非「暂无交付记录」。
+        $jobStatus = Jobs::status($serviceId);
+        if ($jobStatus === 'queued' || $jobStatus === 'running') {
+            $vars['provisioning'] = true;
+            $steps = Orchestrator::stepsFor($serviceId, 1);
+            if (!empty($steps)) {
+                $s = $steps[0];
+                $vars['provStep'] = trim((string) ($s->phase ?? '') . ' / ' . (string) ($s->step ?? ''), ' /');
+            }
+            return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
+        }
+        if ($jobStatus === 'failed') {
+            $vars['error'] = '开通过程中遇到问题，我们已收到记录，请联系客服。/ Provisioning hit a problem — please contact support.';
+            return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
+        }
+
         $allocObj = Ipam::getAllocation($serviceId);
         if (!$allocObj || $allocObj->status === 'terminated') {
             $vars['error'] = '本服务暂无有效交付记录。';

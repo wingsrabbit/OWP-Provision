@@ -17,6 +17,15 @@
         <div class="alert alert-success">{$message}</div>
     {/if}
 
+    {if $provisioning}
+        <div class="alert alert-info">
+            <strong>⏳ 开通中… / Provisioning…</strong><br>
+            正在自动为您配置交换机、VPN 与 IPMI，预计数分钟内完成；完成后此页将显示交付网段、VPN 与 iDRAC 登录信息。请稍后刷新本页。<br>
+            We're provisioning your service (switch + VPN + IPMI). This page will show your connection details once it's done.
+            {if $provStep}<div style="margin-top:8px;font-size:12px;color:#888">当前步骤 / current step：<code>{$provStep}</code></div>{/if}
+        </div>
+    {else}
+
     <table class="table table-striped">
         <tbody>
             <tr>
@@ -166,4 +175,5 @@
             </button>
         </form>
     {/if}
+    {/if}{* /provisioning else *}
 </div>

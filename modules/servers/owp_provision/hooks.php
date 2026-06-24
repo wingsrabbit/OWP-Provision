@@ -373,3 +373,44 @@ function owpprov_cart_line(int $pid, array $configoptions): string
     }
     return '';
 }
+
+/**
+ * P1 异步开通处理器：每个系统 cron 周期（AfterCronJob，推荐每 5 分钟）扫开通队列，逐单跑真机编排。
+ * worker 把 $GLOBALS['__owp_async_run'] 置为该 serviceid 后**直接重入** owp_provision_CreateAccount($params)
+ * （非 ModuleCreate→不重发欢迎邮件），用存的加密 payload 跑真活；沿用 Orchestrator 全局锁串行 + 失败回滚。
+ * 顺手 purge 7 天前 oplog。fail-open：异常只记日志、不影响其它 cron 任务。
+ */
+add_hook('AfterCronJob', 1, function ($vars) {
+    try {
+        require_once __DIR__ . '/owp_provision.php'; // 载入模块函数 owp_provision_* + 全部 lib
+        \OwpProvision\Schema::ensureTables();
+        try { \OwpProvision\Orchestrator::purgeOplog(); } catch (\Throwable $e) {}
+
+        foreach (\OwpProvision\Jobs::due() as $job) {
+            $sid    = (int) $job->serviceid;
+            $params = \OwpProvision\Jobs::payload($sid);
+            if (!is_array($params)) {
+                \OwpProvision\Jobs::markFailed($sid, '任务 payload 丢失或无法解析，请人工 Create。');
+                continue;
+            }
+            \OwpProvision\Jobs::markRunning($sid);
+            $GLOBALS['__owp_async_run'] = $sid; // 标志：让重入的 CreateAccount 跑真活而非再次入队
+            try {
+                $r = owp_provision_CreateAccount($params);
+                if (is_string($r) && strtolower(trim($r)) === 'success') {
+                    \OwpProvision\Jobs::markDone($sid);
+                } else {
+                    \OwpProvision\Jobs::markFailed($sid, is_string($r) ? $r : 'unknown');
+                }
+            } catch (\Throwable $e) {
+                \OwpProvision\Jobs::markFailed($sid, $e->getMessage());
+            } finally {
+                unset($GLOBALS['__owp_async_run']);
+            }
+        }
+    } catch (\Throwable $e) {
+        if (function_exists('logModuleCall')) {
+            logModuleCall('owp_provision', 'AfterCronJob', [], $e->getMessage(), '');
+        }
+    }
+});

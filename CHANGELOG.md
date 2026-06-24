@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 
+### 新增（v2.8 进行中）
+- **开通异步化（P1）**：客户下单/结账点 Complete Order 后不再卡 ~15s 等 SSH 编排。`CreateAccount` 非 worker 上下文时**入队即返回**（新表 `mod_owp_provision_jobs`：一服务一行，payload=加密序列化的 `$params`），`AfterCronJob`（每个系统 cron 周期、推荐每 5 分钟）扫队列逐单跑真机编排——worker 把 `$GLOBALS['__owp_async_run']` 置为该 serviceid 后**直接重入 `CreateAccount`**（非 `ModuleCreate`，避免重发欢迎邮件），沿用 `Orchestrator` 全局锁串行 + 失败回滚，失败 3 次内自动重试。客户区在 `queued/running` 时显示「开通中…」+ 当前步骤（读 oplog），`done` 显交付信息、`failed` 提示联系客服。cron 顺手 purge 7 天前 oplog。
+
 ## [2.7.0] - 2026-06-23
 
 ### 修复

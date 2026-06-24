@@ -35,6 +35,7 @@ class Schema
     public const T_DEVICES     = 'mod_owp_provision_devices';
     public const T_OPLOG       = 'mod_owp_provision_oplog';       // v2 编排器按步日志（保留 7 天）
     public const T_SERVERS     = 'mod_owp_provision_servers';     // v2 服务器库存（租赁/托管）
+    public const T_JOBS        = 'mod_owp_provision_jobs';        // v2.8 异步开通队列（cron 处理）
 
     /**
      * 幂等建全部表。返回简单结果数组，便于 addon `_activate()` 直接转成 WHMCS 期望格式。
@@ -52,10 +53,11 @@ class Schema
             self::createLog();
             self::createOplog();
             self::createServers();
+            self::createJobs();
 
             return [
                 'status'      => 'success',
-                'description' => 'OWP Provision：8 张表已就绪（devices/pools/resources/allocations/config/log/oplog/servers）。',
+                'description' => 'OWP Provision：9 张表已就绪（devices/pools/resources/allocations/config/log/oplog/servers/jobs）。',
             ];
         } catch (\Throwable $e) {
             return [
@@ -78,6 +80,7 @@ class Schema
         self::createLog();
         self::createOplog();
         self::createServers();
+        self::createJobs();
         self::autoSeedResources(); // 安全网：升级后即使 _upgrade 未触发，也保证 resources 已从 pools 播种一次
     }
 
@@ -340,6 +343,30 @@ class Schema
             $t->timestamp('created_at')->nullable();
             $t->timestamp('updated_at')->nullable();
             $t->index('device_id');
+            $t->index('status');
+            $t->engine = 'InnoDB';
+        });
+    }
+
+    /**
+     * v2.8 异步开通队列：CreateAccount 入队即返回（结账不卡），cron(AfterCronJob) 逐单跑真机编排。
+     * 一服务一行（serviceid 唯一）；幂等重入队只更新状态。
+     */
+    public static function createJobs(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_JOBS)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_JOBS, function ($t) {
+            $t->increments('id');
+            $t->unsignedInteger('serviceid')->unique()->comment('一服务一行');
+            $t->string('type', 16)->default('create')->comment('create（开通）');
+            $t->string('status', 12)->default('queued')->comment('queued|running|done|failed');
+            $t->unsignedInteger('attempts')->default(0);
+            $t->text('payload')->nullable()->comment('加密序列化的 $params（worker 直接重入用，省去重建）');
+            $t->text('last_error')->nullable();
+            $t->timestamp('created_at')->nullable();
+            $t->timestamp('updated_at')->nullable();
             $t->index('status');
             $t->engine = 'InnoDB';
         });

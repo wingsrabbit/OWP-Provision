@@ -287,6 +287,8 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
             return $errors;
         }
         require_once __DIR__ . '/lib/Schema.php';
+        require_once __DIR__ . '/lib/Projects.php';
+        require_once __DIR__ . '/lib/Lines.php';
         require_once __DIR__ . '/lib/Servers.php';
         \OwpProvision\Schema::ensureTables();
 
@@ -302,12 +304,28 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
             if (!$prod || (string) $prod->servertype !== 'owp_provision') {
                 continue;
             }
-            if (strtolower(trim((string) ($prod->configoption5 ?? ''))) !== 'server') {
+            $copt = (isset($it['configoptions']) && is_array($it['configoptions'])) ? $it['configoptions'] : [];
+            $project = null;
+            $cartProjectKey = owpprov_cart_option_value($pid, $copt, ['project_key', 'Project Key', 'project', 'Project']);
+            $projectKey = \OwpProvision\Projects::normalizeKey($cartProjectKey !== '' ? $cartProjectKey : (string) ($prod->configoption6 ?? ''));
+            if ($projectKey !== '') {
+                $project = \OwpProvision\Projects::byKey($projectKey);
+            }
+            $isServerProject = $project && ((string) ($project->service_model ?? '') === 'server'
+                || \OwpProvision\Projects::hasFeature($project, 'server_binding'));
+            if (!$isServerProject && strtolower(trim((string) ($prod->configoption5 ?? ''))) !== 'server') {
                 continue; // 仅 server 形态受库存约束
             }
             $qty  = max(1, (int) ($it['qty'] ?? 1));
-            $copt = (isset($it['configoptions']) && is_array($it['configoptions'])) ? $it['configoptions'] : [];
             $line = owpprov_cart_line($pid, $copt);
+            if ($line === '' && $project) {
+                $line = trim((string) \OwpProvision\Projects::binding($project, 'line_name', ''));
+                if ($line === '') {
+                    $lineId = \OwpProvision\Projects::bindingInt($project, 'line_id', 0);
+                    $lineObj = $lineId > 0 ? \OwpProvision\Lines::get($lineId) : null;
+                    $line = $lineObj ? (string) $lineObj->name : '';
+                }
+            }
             $demandByLine[$line] = ($demandByLine[$line] ?? 0) + $qty;
             $totalDemand        += $qty;
         }
@@ -362,6 +380,42 @@ function owpprov_cart_line(int $pid, array $configoptions): string
                 $q->where('optionname', 'like', '%line%')->orWhere('optionname', 'like', '%线路%');
             })->pluck('id')->all();
         foreach ($lineOptIds as $oid) {
+            if (isset($configoptions[$oid]) && (int) $configoptions[$oid] > 0) {
+                $sub = \WHMCS\Database\Capsule::table('tblproductconfigoptionssub')->where('id', (int) $configoptions[$oid])->first();
+                if ($sub && trim((string) $sub->optionname) !== '') {
+                    return trim((string) $sub->optionname);
+                }
+            }
+        }
+    } catch (\Throwable $e) {
+    }
+    return '';
+}
+
+/**
+ * 从购物车条目的配置项里解析指定 option 名称的子选项文本。
+ *
+ * @param string[] $names
+ */
+function owpprov_cart_option_value(int $pid, array $configoptions, array $names): string
+{
+    if (empty($configoptions)) {
+        return '';
+    }
+    try {
+        $gids = \WHMCS\Database\Capsule::table('tblproductconfiglinks')->where('pid', $pid)->pluck('gid')->all();
+        if (empty($gids)) {
+            return '';
+        }
+        $q = \WHMCS\Database\Capsule::table('tblproductconfigoptions')->whereIn('gid', $gids);
+        $q->where(function ($inner) use ($names) {
+            foreach ($names as $idx => $name) {
+                $method = $idx === 0 ? 'where' : 'orWhere';
+                $inner->{$method}('optionname', 'like', '%' . $name . '%');
+            }
+        });
+        $optIds = $q->pluck('id')->all();
+        foreach ($optIds as $oid) {
             if (isset($configoptions[$oid]) && (int) $configoptions[$oid] > 0) {
                 $sub = \WHMCS\Database\Capsule::table('tblproductconfigoptionssub')->where('id', (int) $configoptions[$oid])->first();
                 if ($sub && trim((string) $sub->optionname) !== '') {

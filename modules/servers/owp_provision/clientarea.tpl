@@ -1,5 +1,5 @@
 {*
-    IP-Delivery — Client Area template (GRE 改对端)
+    OWP Provision — Client Area template (GRE 改对端)
     -------------------------------------------------------------------------
     由 owp_provision_ClientArea() 渲染。变量见该函数 $vars。
     仅 GRE 服务显示「改对端」表单；XC 只读展示。
@@ -8,7 +8,7 @@
 *}
 
 <div class="ipd-wrap">
-    <h3>IP 交付详情 / IP Delivery</h3>
+    <h3>交付详情 / OWP Provision</h3>
 
     {if $error}
         <div class="alert alert-danger">{$error}</div>
@@ -32,10 +32,12 @@
                 <td style="width:40%"><strong>交付方式 / Type</strong></td>
                 <td>{$deliveryType}</td>
             </tr>
-            <tr>
-                <td><strong>交付网段 / Delivered Prefix</strong></td>
-                <td><code>{$prefix}</code></td>
-            </tr>
+            {if $deliveryType != 'VPN'}
+                <tr>
+                    <td><strong>交付网段 / Delivered Prefix</strong></td>
+                    <td><code>{$prefix}</code></td>
+                </tr>
+            {/if}
             {if $deliveryType == 'GRE'}
                 <tr>
                     <td><strong>隧道 / Tunnel</strong></td>
@@ -72,7 +74,27 @@
                     <td><strong>可用 IP / Usable IPs</strong></td>
                     <td><code>{$usableRange}</code></td>
                 </tr>
-            {else}
+                {if $ipv6Prefixes|@count > 0}
+                    <tr>
+                        <td><strong>IPv6 前缀 / IPv6 Prefixes</strong></td>
+                        <td>
+                            {foreach from=$ipv6Prefixes item=p}
+                                <div><code>{$p}</code></div>
+                            {/foreach}
+                        </td>
+                    </tr>
+                {/if}
+                {if $ipv6GatewayRows|@count > 0}
+                    <tr>
+                        <td><strong>IPv6 网关 / IPv6 Gateway</strong></td>
+                        <td>
+                            {foreach from=$ipv6GatewayRows item=g}
+                                <div><code>{$g.gateway}</code> <span style="font-size:12px;color:#888">for {$g.prefix}</span></div>
+                            {/foreach}
+                        </td>
+                    </tr>
+                {/if}
+            {elseif $deliveryType != 'VPN'}
                 <tr>
                     <td><strong>PTP（我方 / 您侧）</strong></td>
                     <td><code>{$ptpOur}</code> / <code>{$ptpPeer}</code></td>
@@ -88,7 +110,7 @@
     {/if}
 
     {if $hasVpn}
-        <h4>IPMI VPN 接入 / Remote IPMI access</h4>
+        <h4>{if $vpnTarget}IPMI VPN 接入 / Remote IPMI access{else}VPN 接入 / Remote access{/if}</h4>
         <table class="table table-striped">
             <tbody>
                 {if $vpnServer}
@@ -96,8 +118,10 @@
                 {/if}
                 <tr><td style="width:40%"><strong>VPN 用户名 / Username</strong></td><td><code>{$vpnUser}</code></td></tr>
                 <tr><td><strong>分配地址 / Your VPN IP</strong></td><td><code>{$vpnIp}</code></td></tr>
-                <tr><td><strong>可达 IPMI / Reachable IPMI</strong></td><td><code>{$vpnTarget}</code></td></tr>
-                <tr><td><strong>支持协议 / Protocols</strong></td><td>L2TP / PPTP / SSTP / OpenVPN / IKEv2</td></tr>
+                {if $vpnTarget}
+                    <tr><td><strong>可达 IPMI / Reachable IPMI</strong></td><td><code>{$vpnTarget}</code></td></tr>
+                {/if}
+                <tr><td><strong>支持协议 / Protocols</strong></td><td>{$vpnProtocols}</td></tr>
                 {if $ipsecPsk}
                     <tr><td><strong>IPsec 预共享密钥 / PSK</strong></td><td><code>{$ipsecPsk}</code><div style="font-size:12px;color:#888">L2TP/IPsec、IKEv2 连接时填此共享密钥</div></td></tr>
                 {/if}
@@ -121,10 +145,17 @@
                 </tr>
             </tbody>
         </table>
-        <div class="alert alert-info" style="font-size:12px">
-            连上 VPN 后仅可访问<strong>您自己的 IPMI</strong> 与<strong>公网</strong>（用于下载/安装系统），其余网络已隔离。请通过 IPMI/iDRAC 自行安装操作系统。<br>
-            Once connected you may reach only your own IPMI and the public internet; everything else is isolated.
-        </div>
+        {if $vpnTarget}
+            <div class="alert alert-info" style="font-size:12px">
+                连上 VPN 后仅可访问<strong>您自己的 IPMI</strong> 与<strong>公网</strong>（用于下载/安装系统），其余网络已隔离。请通过 IPMI/iDRAC 自行安装操作系统。<br>
+                Once connected you may reach only your own IPMI and the public internet; everything else is isolated.
+            </div>
+        {else}
+            <div class="alert alert-info" style="font-size:12px">
+                这是独立 VPN 服务。连接后会分配上方固定地址，具体可访问范围以服务说明和防火墙策略为准。<br>
+                This standalone VPN service assigns the fixed address above; reachable networks follow the service policy.
+            </div>
+        {/if}
 
         {if $idracUrl}
             <h4>iDRAC 远程管理 / Out-of-band</h4>

@@ -139,10 +139,33 @@ WHMCS 后台 → **Setup → Addon Modules** → 找到「IP Delivery」→ **Ac
 
 ### 5.1 产品
 
-Setup → Products/Services → 新建 Product「**IP Delivery**」:
+Setup → Products/Services → 新建 Product「**OWP Provision**」:
 - Type = **Other**
-- Module Settings → Module Name = **IP Delivery**(`owp_provision`)
+- Module Settings → Module Name = **OWP Provision**(`owp_provision`)
 - Auto setup = **收款后自动开通**(On Payment)。
+
+### 5.1.1 Project / Blueprint(v3)
+
+v3 推荐把 WHMCS 产品绑定到 Project/Blueprint。绑定方式二选一:
+- Module Settings 的 `Project Key`(`configoption6`)。
+- Configurable Option `Project Key` / `project_key`。客户可配项优先级高于 module `configoption6`。
+
+默认 seed 会在 `ensureTables()` 中幂等创建:
+- `dedicated_hkbgp`
+- `dedicated_hkbgp_cn`
+- `ip_transit_xc`
+- `ip_transit_gre`
+- `vpn_l2tp`
+
+旧产品无需立即修改。若没有 `project_key`，模块会继续按旧配置自动推导:
+- `serviceModel=server + line=HKBGP` → `dedicated_hkbgp`
+- `serviceModel=server + line=HKBGP-CN` → `dedicated_hkbgp_cn`
+- `serviceModel=ip_transit + delivery_type=xc` → `ip_transit_xc`
+- `serviceModel=ip_transit + delivery_type=gre` → `ip_transit_gre`
+
+后台 addon 新增 **Projects / Blueprints** 区域，可为项目启用 `server_binding`、`vlan`、`ipv4_prefix`、`ipv6_prefix`、`xc`、`gre`、`l2tp`、`openvpn`、`ikev2`、`ipmi_vpn`、`bandwidth_limit` 等 feature，并绑定 line、device、IPv4/IPv6 pool group、server pool、VPN pool。底层 Devices、Lines/Pools、Servers、Resources、Allocations 不会删除。
+
+迁移前建议备份 `mod_owp_provision_%` 表与 `modules/servers/owp_provision/`、`modules/addons/owp_provision/` 目录。v3 migration 只新增表/列并 seed 默认项目，不删除旧字段；回滚时可恢复旧代码并保留新增表，或在确认无人使用 v3 IPv6/Project 后再人工清理新增表。
 
 ### 5.2 Configurable Options(客户下单可选,计价)
 
@@ -150,15 +173,17 @@ Setup → Products/Services → 新建 Product「**IP Delivery**」:
 - `delivery_type`:dropdown。选项值用 `XC` / `GRE`(与类型 key 对应)。**建议只放「前端开放的类型」**;即使放了未开放的类型,下单页 JS 也会自动隐藏、后端再兜底拒绝(双保险)。
 - `bandwidth`:dropdown,如 `100M` / `200M` / `500M` / `1G`(→ 限速 CIR;1M = 1024kbps)。**XC 用此值下端口 `qos lr`;隧道仅记录不限速。**
 - `prefix_size`:dropdown,如 `/32` / `/30` / `/29` / `/28`(→ 分配多大块)。
+- `IPv6 Prefixes`:dropdown 或数量型选项。Dedicated 项目默认 1 个 `/64`;该选项可填 `1`、`2`、`3 x /64` 等，模块会解析数字并分配对应数量的 `/64`。
+- `Project Key` / `project_key`:可选。若配置则覆盖 module `configoption6`;不配置时走旧模型推导。
 - `node`(**多设备时必加**):dropdown,**子选项 = 各启用设备**。子选项名**首选含 `#设备id`**(如 `Edge-A #1`、`Core #2`)——最稳,因为 WHMCS 购物车可能给可见文本追加价格后缀,而 `#id` 正则不受影响。也支持纯数字 `1`、`1| Edge-A`、或与「设备」区**完全一致**的设备名。**只启用 1 台时可不建 `node`**。
 
-> 模块按**选项名**读取(`delivery_type` / `bandwidth` / `prefix_size` / `node`)。
+> 模块按**选项名**读取(`project_key` / `Project Key` / `delivery_type` / `bandwidth` / `prefix_size` / `IPv6 Prefixes` / `node`)。
 
 ### 5.3 Custom Fields(按产品)
 
 - **Remote Endpoint IP**(Text,**勾 Show on Order Form**)—— GRE 隧道对端,校验合法公网 IPv4。JS 按交付方式条件显隐:**GRE 显示且必填,XC 自动隐藏**。
 - **XC Port**(Text,**勾 Show on Order Form**)—— XC 下单时由 JS 转成「空闲端口下拉」(AJAX 实时拉空闲口)让客户选;**GRE 时自动隐藏**。留空 = 系统自动分配。
-- 回写字段(勾 **Admin Only**,开通后自动填,便于展示;权威仍在 allocations 表):**Allocated VLAN** / **PTP** / **Delivered Prefix** / **Tunnel/Loopback**。
+- 回写字段(勾 **Admin Only**,开通后自动填,便于展示;权威仍在 allocations 表):**Allocated VLAN** / **PTP** / **Delivered Prefix** / **Tunnel/Loopback** / **IPv6 Prefixes** / **IPv6 Gateway**。
 
 > 回写字段名必须**完全一致**(含大小写),否则模块找不到字段会静默跳过(不报错)。客户区 GRE 详情由 `clientarea.tpl` 渲染,不依赖回写字段。
 
@@ -176,6 +201,15 @@ addon → Configure(类型注册表见 `lib/Types.php`):
 - **enabledTypes**:启用的交付类型(代码可用、可被 admin 手动开通)。
 - **frontendTypes**:前端开放下单的类型。
 - 将来加类型:`lib/Types.php` 加一项 + 配套 `Ipam::allocateX` / `Templates::xCreate/xTeardown`,核心分发不改。
+
+### 5.6 IPv6 pool group
+
+Dedicated 项目的 IPv6 从 `purpose=ipv6` 的 pool group 分配。建议:
+- 在 Lines/Pools 区为 HKBGP 与 HKBGP-CN 分别建立 IPv6 pool group，绑定对应 line 或 project。
+- 添加 IPv6 母段，例如 `/48` 或 `/56`;模块按需切 `/64`，不会预切全量子网。
+- 在 Projects / Blueprints 中把 `ipv6_pool_group_id` 指到对应 pool group。若未指定，模块会按 line/device 寻找可用 IPv6 pool。
+
+Terminate 会释放 `mod_owp_provision_ipv6_allocations` 中对应 `/64`;Suspend/Unsuspend 会同步 IPv6 allocation 状态，不会改变现有 IPv4 设备逻辑。
 
 ---
 

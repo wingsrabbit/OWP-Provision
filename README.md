@@ -2,11 +2,11 @@
 
 > **WHMCS 产品驱动的边缘基础设施开通模块** —— 客户在前端下单（租赁/托管服务器、IP Transit、VPN 接入…），模块据「产品蓝图」自动在 接入交换机 / RouterOS / 服务器 BMC 上编排开通并自动回收。内置清单式 IPAM、多设备、多设备类型驱动。
 >
-> **v2（产品驱动）已交付**：服务器租赁/托管（绑机 + 发 IP + IPMI VPN + iDRAC 自动建号）、多协议 VPN（L2TP/PPTP/SSTP/OpenVPN/IKEv2）、服务器库存、编排器（全局锁串行 + 按步日志 + 失败回滚）、后台开通队列时间线 UI——见下方 [v2 能力](#v2-能力产品驱动)。
+> **v3（Project / Blueprint）已交付**：一个 WHMCS 产品可绑定一个 Project/Blueprint，Project 下启用 Feature/Step（Dedicated Server、IPv4/IPv6 Prefix、VLAN、GRE、XC、L2TP/IPMI VPN、带宽限制等）。旧 `serviceModel + delivery_type` 产品继续自动推导到默认项目，平滑兼容。
 >
 > **IP 交付核心（已真机验证）**：在华为 VRP 接入交换机上以 **物理交叉连接(XC)** 或 **GRE 隧道** 交付公网 IPv4，端口 `qos lr` 限速，暂停/恢复/销户反向拆除回收。
 
-![version](https://img.shields.io/badge/version-2.8-blue)
+![version](https://img.shields.io/badge/version-3.0-blue)
 ![WHMCS](https://img.shields.io/badge/WHMCS-9.x-2a9fd6)
 ![PHP](https://img.shields.io/badge/PHP-8.3%2B-777bb4)
 ![license](https://img.shields.io/badge/license-MIT-orange)
@@ -16,7 +16,7 @@
 
 ## 目录
 
-- [v2 能力（产品驱动）](#v2-能力产品驱动)
+- [v3 能力（Project / Blueprint）](#v3-能力project--blueprint)
 - [功能特性](#功能特性)
 - [工作原理](#工作原理)
 - [环境要求](#环境要求)
@@ -31,10 +31,16 @@
 
 ---
 
-## v2 能力（产品驱动）
+## v3 能力（Project / Blueprint）
 
-v2 把模块从「IP 交付」重构为**产品驱动的开通编排器**：一个 WHMCS 产品 = 一份**蓝图**（产品 ConfigOption `serviceModel`：`ip_transit` 或 `server`），`CreateAccount` 在全局锁内按步编排、`Terminate` 逆序回滚。
+v3 把模块从单一产品逻辑升级为 **Project / Blueprint + Feature / Step**：一个 WHMCS 产品可通过 module `configoption6` 或 configurable option `Project Key` 绑定项目；没有 `project_key` 时继续从旧 `serviceModel + delivery_type + line` 自动推导。`CreateAccount` 在全局锁内按项目拆分步骤编排，失败按已完成步骤回滚，`Terminate` 释放对应资源。
 
+- **默认项目 seed**：`dedicated_hkbgp`、`dedicated_hkbgp_cn`、`ip_transit_xc`、`ip_transit_gre`、`vpn_l2tp`。
+- **Feature/Step 生命周期**：每个 step 预留 `validate / reserve / apply / verify / rollback / terminate`，首批覆盖 Dedicated Server、IP Transit XC/GRE、Standalone L2TP VPN；OpenVPN/IKEv2 已有协议扩展点。
+- **Dedicated Server 项目**：绑定服务器库存 → VLAN/Vlanif → IPv4 prefix → IPv6 `/64` prefix → IPMI VPN → 带宽/端口限速。Dedicated 默认 1 个 `/64`，可由 `IPv6 Prefixes` 配置项购买多个 `/64`。
+- **IPv6 池组**：Lines/Pools 支持 `purpose=ipv6`，可按 project/line 绑定不同 IPv6 pool，分配写入 `mod_owp_provision_ipv6_allocations` 并回写客户区/custom fields。
+- **Standalone VPN 项目**：`vpn_l2tp` 是独立项目，不再依附 Dedicated；RouterOS `ppp secret service=any` 兼容现有多协议行为，UI 中以协议列表表示启用能力。
+- **后台 Projects / Blueprints**：addon 新增上层项目入口，可编辑 feature、line/device/pool/server/vpn 绑定；Devices、Lines/Pools、Servers、Resources、Allocations 仍保留为底层资源入口。
 - **设备驱动分层**：`Drivers/VrpDriver`（华为 VRP 交换机）、`Drivers/RosDriver`（MikroTik RouterOS：VPN + iDRAC 临时 DNAT）、`Drivers/DracDriver`（iDRAC Redfish）；设备表带 `driver` 字段，新增设备类型不动蓝图。
 - **服务器租赁 / 托管蓝图**：选/绑空闲服务器（库存原子绑定）→ 在其交换机端口**直连发 IP**（独立服务器 = L2 终端主机：vlan + Vlanif 当网关 + 物理口 access + `qos lr`，**直连子网、无 PTP/路由**）→ 经其 ROS 开 IPMI VPN → iDRAC 建最小权限子账号 → 交付（网络通 + VPN 可达 IPMI，OS 客户自装）。
 - **多协议 VPN**（RouterOS）：一条 `ppp secret`(service=any) 即 L2TP / PPTP / SSTP / OpenVPN + 可选 IKEv2；每客户专属 pin IP + 隔离 filter（**只通公网 + 自己 IPMI，其余 drop**）。
@@ -114,7 +120,7 @@ WHMCS 客户下单 ──▶ CreateAccount ──▶ 从该设备的 IPAM 清单
 2. **激活**:后台 → *Setup → Addon Modules* → 「OWP Provision」→ **Activate**(幂等自动建 `mod_owp_provision_*` 表)。授权可访问该 addon 的管理员角色。
 3. **加设备**:进 addon 管理页「设备 / Devices」区,新增交换机连接配置 + 凭据,**Test Connection** 验证。
 4. **配资源**:在「资源 / Resources」区按你的可交付聚合 / 空闲端口填入 IPAM 清单。
-5. **建产品**:Type = *Other*,Module = *OWP Provision*,加 ConfigOption `serviceModel`(`ip_transit` 或 `server`) + `bandwidth` / `prefix_size`(server 建议仅 /30~/28,默认 /29);IP Transit 再加 `delivery_type` / `Remote Endpoint IP` / `XC Port`,server 加 `line` / `server` 选项(库存绑定)。详见 [docs/INSTALL.md](docs/INSTALL.md) 附录 A。
+5. **建产品**:Type = *Other*,Module = *OWP Provision*。推荐用 `project_key` / module `configoption6` 绑定 Project；旧产品可继续使用 `serviceModel`(`ip_transit` / `server`) + `delivery_type` + `line` 自动推导。IP Transit 仍用 `Remote Endpoint IP` / `XC Port`，Dedicated 可加 `IPv6 Prefixes` 购买多个 `/64`。详见 [docs/INSTALL.md](docs/INSTALL.md) 附录 A。
 6. **测试**:开 Dry-Run,下单核对命令块 → 关 Dry-Run 用安全测试值真开 → 全流程过后放量。
 
 > server 模块**必须**安装(addon 共用其 `lib/`)。改 hooks 后 deactivate→activate 一次刷新 hook 缓存。

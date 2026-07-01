@@ -1,6 +1,6 @@
 <?php
 /**
- * IP-Delivery — Templates.php
+ * OWP Provision — Templates.php
  * ----------------------------------------------------------------------------
  * 渲染 接入交换机 的 VRP 命令块：XC 开通 / GRE 开通 / traffic-policy 限速 /
  * 拆除（teardown）/ 暂停 / 恢复 / 改 GRE 对端，以及 display 预检 + 校验命令。
@@ -156,8 +156,9 @@ class Templates
     // ======================================================================
 
     /**
-     * 渲染独立服务器开通命令：vlan + Vlanif(网关=交付段第一可用 IP) + 物理口 access + qos lr。
-     * 交付段是 Vlanif 直连子网；服务器用其余 IP，网关填 Vlanif 地址。需要键：vlan_id, port, prefix, bandwidth。
+     * 渲染独立服务器开通命令：vlan + Vlanif(网关=交付段第一可用 IP) + IPv6 /64 网关 +
+     * 物理口 access + qos lr。交付段是 Vlanif 直连子网；服务器用其余 IP，网关填 Vlanif 地址。
+     * 需要键：vlan_id, port, prefix, bandwidth；可选 ipv6_prefixes(JSON/array/list)，每个 /64 配 ::1/64。
      * @return string[]
      */
     public static function serverCreate(array $alloc, string $custTag): array
@@ -177,6 +178,13 @@ class Templates
         $lines[] = 'interface Vlanif' . $vid;
         $lines[] = ' description ' . $custTag;
         $lines[] = ' ip address ' . $gw . ' ' . $prefix['mask'];
+        $ipv6Gateways = self::serverIpv6Gateways($alloc);
+        if (!empty($ipv6Gateways)) {
+            $lines[] = ' ipv6 enable';
+            foreach ($ipv6Gateways as $gw6) {
+                $lines[] = ' ipv6 address ' . $gw6;
+            }
+        }
         $lines[] = 'quit';
         // 服务器 NIC 所在物理口：access 入 VLAN + 整口限速
         $lines[] = 'interface ' . $port;
@@ -192,6 +200,8 @@ class Templates
 
     /**
      * 服务器拆除：逆序 undo（撤 qos lr → 端口复原 → undo Vlanif → undo vlan）。无 route-static 可撤。
+     * `undo interface Vlanif<N>` 会删除该 Vlanif 上的 IPv4 地址、`ipv6 enable` 与全部 IPv6 地址；
+     * Create 失败 rollback 也走本模板，因此 IPv6 /64 网关随 Vlanif 一并清理。
      * @return string[]
      */
     public static function serverTeardown(array $alloc): array
@@ -512,10 +522,13 @@ class Templates
         $type = (string) ($alloc['delivery_type'] ?? '');
         $cmds = [];
         if ($type === 'server') {
-            // 独立服务器 = Vlanif 直连子网，**无 route-static** → 只查 VLAN/Vlanif，不查 routeHit。
+            // 独立服务器 = Vlanif 直连子网，**无 route-static** → 查 VLAN/Vlanif；若有 IPv6，则回读 Vlanif IPv6 地址。
             $vid = (int) $alloc['vlan_id'];
             $cmds['vlan']  = 'display vlan ' . $vid;
             $cmds['iface'] = 'display interface Vlanif' . $vid;
+            if (!empty(self::serverIpv6Gateways($alloc))) {
+                $cmds['ipv6_iface'] = 'display ipv6 interface Vlanif' . $vid;
+            }
             return $cmds;
         }
         $prefix = self::parsePrefix((string) $alloc['prefix']);
@@ -539,6 +552,67 @@ class Templates
             return $net;
         }
         return $len >= 31 ? long2ip($base) : long2ip($base + 1);
+    }
+
+    /**
+     * Dedicated server IPv6 gateway rows. Each allocated prefix gets the first
+     * address as gateway, e.g. 2a13:9500:194::/64 -> 2a13:9500:194::1/64.
+     *
+     * @return array<int,array{prefix:string,gateway:string,address:string,len:int}>
+     */
+    public static function serverIpv6GatewayRows(array $alloc): array
+    {
+        $rows = [];
+        foreach (self::serverIpv6Prefixes($alloc) as $cidr) {
+            $p = self::parseIpv6Prefix($cidr);
+            $addr = inet_ntop(self::ipv6Add($p['netbin'], 1));
+            if ($addr === false) {
+                continue;
+            }
+            $rows[] = [
+                'prefix' => inet_ntop($p['netbin']) . '/' . $p['len'],
+                'gateway' => $addr . '/' . $p['len'],
+                'address' => $addr,
+                'len' => $p['len'],
+            ];
+        }
+        return $rows;
+    }
+
+    /** @return string[] gateway addresses with prefix length, e.g. 2001:db8::1/64 */
+    public static function serverIpv6Gateways(array $alloc): array
+    {
+        return array_map(static fn(array $row): string => $row['gateway'], self::serverIpv6GatewayRows($alloc));
+    }
+
+    /** @return string[] canonical IPv6 CIDRs from allocation summary. */
+    public static function serverIpv6Prefixes(array $alloc): array
+    {
+        $raw = $alloc['ipv6_prefixes'] ?? [];
+        if (is_string($raw)) {
+            $trimmed = trim($raw);
+            if ($trimmed === '') {
+                return [];
+            }
+            $decoded = json_decode($trimmed, true);
+            $raw = is_array($decoded) ? $decoded : preg_split('/[\r\n,]+/', $trimmed);
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+        $out = [];
+        foreach ($raw as $cidr) {
+            $cidr = trim((string) $cidr);
+            if ($cidr === '') {
+                continue;
+            }
+            $p = self::parseIpv6Prefix($cidr);
+            $canon = inet_ntop($p['netbin']) . '/' . $p['len'];
+            if (!in_array($canon, $out, true)) {
+                $out[] = $canon;
+            }
+        }
+        return $out;
     }
 
     /**
@@ -574,5 +648,51 @@ class Templates
             'mask'     => Ipam::maskLenToDotted($p['len']),
             'wildcard' => Ipam::maskLenToWildcard($p['len']), // 高级 ACL 反掩码（/28 → 0.0.0.15）
         ];
+    }
+
+    /** @return array{netbin:string,len:int} */
+    private static function parseIpv6Prefix(string $cidr): array
+    {
+        $parts = explode('/', trim($cidr), 2);
+        $ip = $parts[0] ?? '';
+        $len = isset($parts[1]) && $parts[1] !== '' ? (int) $parts[1] : 128;
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false || $len < 0 || $len > 128) {
+            throw new \RuntimeException('非法 IPv6 前缀：' . $cidr);
+        }
+        $bin = inet_pton($ip);
+        if ($bin === false || strlen($bin) !== 16) {
+            throw new \RuntimeException('非法 IPv6 地址：' . $ip);
+        }
+        return ['netbin' => self::ipv6Mask($bin, $len), 'len' => $len];
+    }
+
+    private static function ipv6Mask(string $bin, int $len): string
+    {
+        $bytes = array_values(unpack('C*', $bin));
+        for ($i = 0; $i < 16; $i++) {
+            $bitsLeft = $len - ($i * 8);
+            if ($bitsLeft >= 8) {
+                continue;
+            }
+            if ($bitsLeft <= 0) {
+                $bytes[$i] = 0;
+            } else {
+                $mask = (0xFF << (8 - $bitsLeft)) & 0xFF;
+                $bytes[$i] &= $mask;
+            }
+        }
+        return pack('C*', ...$bytes);
+    }
+
+    private static function ipv6Add(string $bin, int $delta): string
+    {
+        $bytes = array_values(unpack('C*', $bin));
+        $carry = max(0, $delta);
+        for ($i = 15; $i >= 0 && $carry > 0; $i--) {
+            $sum = $bytes[$i] + ($carry & 0xFF);
+            $bytes[$i] = $sum & 0xFF;
+            $carry = ($carry >> 8) + ($sum >> 8);
+        }
+        return pack('C*', ...$bytes);
     }
 }

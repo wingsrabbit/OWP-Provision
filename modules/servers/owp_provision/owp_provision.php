@@ -886,6 +886,7 @@ function owp_provision_ClientArea(array $params)
         'usableRange'  => '',
         'netmask'      => '',
         'ipv6Prefixes' => [],
+        'ipv6GatewayRows' => [],
         'vpnServer'    => '',
         'ipsecPsk'     => '',
         'idracUrl'     => '',
@@ -930,6 +931,14 @@ function owp_provision_ClientArea(array $params)
         $vars['tunnelId']     = (string) ($alloc['tunnel_id'] ?? '');
         $vars['remoteIp']     = (string) ($alloc['remote_ip'] ?? '');
         $vars['ipv6Prefixes'] = Ipam::ipv6ForService($serviceId);
+        if (empty($vars['ipv6Prefixes']) && !empty($alloc['ipv6_prefixes'])) {
+            $vars['ipv6Prefixes'] = Templates::serverIpv6Prefixes($alloc);
+        }
+        if (!empty($vars['ipv6Prefixes'])) {
+            $ipv6Alloc = $alloc;
+            $ipv6Alloc['ipv6_prefixes'] = json_encode($vars['ipv6Prefixes'], JSON_UNESCAPED_SLASHES);
+            $vars['ipv6GatewayRows'] = Templates::serverIpv6GatewayRows($ipv6Alloc);
+        }
 
         // VPN（服务器形态）：一次性查看凭据
         $vars['vpnUser']     = (string) ($alloc['vpn_user'] ?? '');
@@ -1503,6 +1512,10 @@ function owpprov_writeback_customfields(array $params, array $alloc): void
         }
         if (!empty($ipv6)) {
             owpprov_set_customfield($params, 'IPv6 Prefixes', implode("\n", $ipv6));
+            $allocForIpv6 = $alloc;
+            $allocForIpv6['ipv6_prefixes'] = json_encode($ipv6, JSON_UNESCAPED_SLASHES);
+            $gateways = array_map(static fn(array $row): string => (string) $row['gateway'], Templates::serverIpv6GatewayRows($allocForIpv6));
+            owpprov_set_customfield($params, 'IPv6 Gateway', implode("\n", $gateways));
         }
         $tun = '';
         if (($alloc['delivery_type'] ?? '') === 'gre') {

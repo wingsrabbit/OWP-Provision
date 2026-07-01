@@ -12,6 +12,7 @@ define('WHMCS', true);
 require_once __DIR__ . '/../modules/servers/owp_provision/owp_provision.php';
 
 use OwpProvision\Projects;
+use OwpProvision\Templates;
 
 $failures = [];
 
@@ -92,6 +93,26 @@ check_same(owpprov_requested_ipv6_count([
 check_same(owpprov_requested_ipv6_count([
     'customfields' => ['IPv6 Prefixes' => '2'],
 ], $dedicatedCn, true), 2, 'custom field IPv6 Prefixes fallback parses multiple /64s');
+
+$serverAllocWithIpv6 = [
+    'serviceid' => 9001,
+    'delivery_type' => 'server',
+    'vlan_id' => 106,
+    'port' => 'XGigabitEthernet0/0/1',
+    'prefix' => '203.0.113.0/29',
+    'bandwidth' => '100M',
+    'ipv6_prefixes' => json_encode([
+        '2a13:9500:194::/64',
+        '2a13:9500:194:1::/64',
+    ], JSON_UNESCAPED_SLASHES),
+];
+$serverCreate = implode("\n", Templates::serverCreate($serverAllocWithIpv6, 'TEST-9001'));
+check_true(strpos($serverCreate, 'ipv6 enable') !== false, 'serverCreate renders ipv6 enable for dedicated IPv6 prefixes');
+check_true(strpos($serverCreate, 'ipv6 address 2a13:9500:194::1/64') !== false, 'serverCreate renders first IPv6 /64 gateway');
+check_true(strpos($serverCreate, 'ipv6 address 2a13:9500:194:1::1/64') !== false, 'serverCreate renders multiple IPv6 /64 gateways');
+$serverVerify = Templates::verifyCommands($serverAllocWithIpv6);
+check_true(isset($serverVerify['ipv6_iface']), 'verifyCommands includes IPv6 Vlanif display when server IPv6 prefixes exist');
+check_true(strpos((string) ($serverVerify['ipv6_iface'] ?? ''), 'display ipv6 interface Vlanif106') !== false, 'verifyCommands renders IPv6 display command for server Vlanif');
 
 $vpn = (object) [
     'project_key' => 'vpn_l2tp',

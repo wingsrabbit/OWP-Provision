@@ -183,7 +183,7 @@ v3 推荐把 WHMCS 产品绑定到 Project/Blueprint。绑定方式二选一:
 
 - **Remote Endpoint IP**(Text,**勾 Show on Order Form**)—— GRE 隧道对端,校验合法公网 IPv4。JS 按交付方式条件显隐:**GRE 显示且必填,XC 自动隐藏**。
 - **XC Port**(Text,**勾 Show on Order Form**)—— XC 下单时由 JS 转成「空闲端口下拉」(AJAX 实时拉空闲口)让客户选;**GRE 时自动隐藏**。留空 = 系统自动分配。
-- 回写字段(勾 **Admin Only**,开通后自动填,便于展示;权威仍在 allocations 表):**Allocated VLAN** / **PTP** / **Delivered Prefix** / **Tunnel/Loopback** / **IPv6 Prefixes**。
+- 回写字段(勾 **Admin Only**,开通后自动填,便于展示;权威仍在 allocations 表):**Allocated VLAN** / **PTP** / **Delivered Prefix** / **Tunnel/Loopback** / **IPv6 Prefixes** / **IPv6 Gateway**。
 
 > 回写字段名必须**完全一致**(含大小写),否则模块找不到字段会静默跳过(不报错)。客户区 GRE 详情由 `clientarea.tpl` 渲染,不依赖回写字段。
 

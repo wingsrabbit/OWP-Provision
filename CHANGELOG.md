@@ -11,6 +11,7 @@
 - **Project / Blueprint 上层模型**：新增 `mod_owp_provision_projects`，默认 seed `dedicated_hkbgp`、`dedicated_hkbgp_cn`、`ip_transit_xc`、`ip_transit_gre`、`vpn_l2tp`。WHMCS 产品可通过 module `configoption6` 或 configurable option `Project Key` 绑定项目；未绑定时继续由旧 `serviceModel + delivery_type + line` 自动推导。
 - **Feature / Step 扩展点**：新增 `lib/FeatureSteps.php`，每个 feature step 具备 `validate / reserve / apply / verify / rollback / terminate` 生命周期；首批把 IP Transit、Dedicated Server、Standalone L2TP VPN 拆成项目入口，保留全局锁、oplog、失败回滚与 dry-run 行为。
 - **Dedicated IPv6 /64 分配**：新增 `mod_owp_provision_ipv6_allocations` 与 `purpose=ipv6` 池组支持。Dedicated 默认分配 1 个 `/64`，可读取 `IPv6 Prefixes` configurable option / custom field 分配多个 `/64`，Terminate/Suspend/Unsuspend 会同步 IPv6 分配状态并释放。
+- **Dedicated IPv6 VRP 交付闭环**：server blueprint 会在 Vlanif 上下发 `ipv6 enable` 与每个 `/64` 的首地址网关（如 `::1/64`），verify 会回读 `display ipv6 interface Vlanif<N>`，客户区与 custom fields 同步展示 `IPv6 Gateway`。
 - **Standalone VPN 项目**：`vpn_l2tp` 成为独立 Project，不再只能作为 dedicated server 附属能力。RouterOS `ppp secret service=any` 兼容现有 L2TP/PPTP/SSTP/OpenVPN 行为，项目配置里保留 OpenVPN/IKEv2 协议扩展点。
 - **Admin Projects / Blueprints UI**：addon 新增 Projects / Blueprints 区域，可新增/编辑项目、启停 features、绑定 line/device/pool/server/vpn pool；底层 Devices、Lines/Pools、Servers、Resources、Allocations 入口保留。
 

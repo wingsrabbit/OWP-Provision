@@ -146,7 +146,7 @@ class VrpDriver implements DriverInterface
     // 回读校验（顾问性；不作为开通失败/回滚依据，除拆除残留外）
     // ----------------------------------------------------------------------
 
-    /** 校验交付：接口 UP + 路由命中（net/len 精确）。返回 ['ok','error','detail']。 */
+    /** 校验交付：接口 UP + 路由命中（net/len 精确）+ server IPv6 网关回读。返回 ['ok','error','detail']。 */
     public function verifyDelivery(array $alloc): array
     {
         $cmds   = Templates::verifyCommands($alloc);
@@ -172,6 +172,21 @@ class VrpDriver implements DriverInterface
                 }
             } catch (\Throwable $e) {
                 $errors[] = '读路由失败：' . $e->getMessage();
+            }
+        }
+        if (isset($cmds['ipv6_iface'])) {
+            try {
+                $o = $this->conn->runDisplay($cmds['ipv6_iface']);
+                $detail['ipv6_iface'] = $o;
+                foreach (Templates::serverIpv6GatewayRows($alloc) as $row) {
+                    $addr = (string) $row['address'];
+                    $gateway = (string) $row['gateway'];
+                    if (stripos($o, $gateway) === false && !$this->ipv6AddressPresent($o, $addr)) {
+                        $errors[] = 'IPv6 网关未配置（' . $gateway . '）';
+                    }
+                }
+            } catch (\Throwable $e) {
+                $errors[] = '读 IPv6 接口失败：' . $e->getMessage();
             }
         }
         return [
@@ -204,6 +219,45 @@ class VrpDriver implements DriverInterface
             } catch (\Throwable $e) {
             }
         }
+        if (isset($cmds['ipv6_iface'])) {
+            try {
+                $o = $this->conn->runDisplay($cmds['ipv6_iface']);
+                foreach (Templates::serverIpv6GatewayRows($alloc) as $row) {
+                    $addr = (string) $row['address'];
+                    $gateway = (string) $row['gateway'];
+                    if (stripos($o, $gateway) !== false || $this->ipv6AddressPresent($o, $addr)) {
+                        $errors[] = 'IPv6 网关仍在接口上（' . $gateway . '）';
+                    }
+                }
+            } catch (\Throwable $e) {
+                // 读失败常因接口已删，不计为残留。
+            }
+        }
         return ['ok' => empty($errors), 'error' => implode('；', $errors)];
+    }
+
+    private function ipv6AddressPresent(string $output, string $expected): bool
+    {
+        $expectedBin = inet_pton($expected);
+        if ($expectedBin === false) {
+            return false;
+        }
+        if (stripos($output, $expected) !== false) {
+            return true;
+        }
+        if (!preg_match_all('/[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]+(?:\\/\\d{1,3})?/', $output, $matches)) {
+            return false;
+        }
+        foreach ($matches[0] as $token) {
+            $token = trim((string) $token, " \t\r\n,;()[]{}<>");
+            $token = explode('/', $token, 2)[0];
+            if (filter_var($token, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false) {
+                continue;
+            }
+            if (inet_pton($token) === $expectedBin) {
+                return true;
+            }
+        }
+        return false;
     }
 }

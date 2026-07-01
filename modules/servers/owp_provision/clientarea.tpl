@@ -84,6 +84,16 @@
                         </td>
                     </tr>
                 {/if}
+                {if $ipv6GatewayRows|@count > 0}
+                    <tr>
+                        <td><strong>IPv6 网关 / IPv6 Gateway</strong></td>
+                        <td>
+                            {foreach from=$ipv6GatewayRows item=g}
+                                <div><code>{$g.gateway}</code> <span style="font-size:12px;color:#888">for {$g.prefix}</span></div>
+                            {/foreach}
+                        </td>
+                    </tr>
+                {/if}
             {elseif $deliveryType != 'VPN'}
                 <tr>
                     <td><strong>PTP（我方 / 您侧）</strong></td>

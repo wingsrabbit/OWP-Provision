@@ -1,6 +1,6 @@
 <?php
 /**
- * IP-Delivery — WHMCS Addon Module（设备 + 凭据 + IPAM 后台页）
+ * OWP Provision — WHMCS Addon Module（设备 + 凭据 + IPAM 后台页）
  * ============================================================================
  * 与同名 server 模块成对，共用同一套 DB 表与 lib/（addon require server 目录下的 lib）。
  *
@@ -31,6 +31,7 @@ use OwpProvision\Connection;
 use OwpProvision\Types;
 use OwpProvision\Pools;
 use OwpProvision\Lines;
+use OwpProvision\Projects;
 
 if (!defined('WHMCS')) {
     die('Access Denied');
@@ -43,6 +44,7 @@ require_once $ipdLibDir . '/Config.php';
 require_once $ipdLibDir . '/Devices.php';
 require_once $ipdLibDir . '/Servers.php';
 require_once $ipdLibDir . '/Types.php';
+require_once $ipdLibDir . '/Projects.php';
 require_once $ipdLibDir . '/Ipam.php';
 require_once $ipdLibDir . '/Pools.php';
 require_once $ipdLibDir . '/Lines.php';
@@ -79,9 +81,9 @@ function owpprov_admin_pool_kinds(): array
 function owp_provision_config()
 {
     return [
-        'name'     => 'IP Delivery',
+        'name'     => 'OWP Provision',
         'version'  => Schema::VERSION,
-        'author'   => 'IP Delivery Module',
+        'author'   => 'OWP Provision',
         'language' => 'english',
         'fields'   => [
             'globalDryRun' => [
@@ -144,7 +146,7 @@ function owp_provision_upgrade($vars)
         Schema::migrate((string) ($vars['version'] ?? '0'));
     } catch (\Throwable $e) {
         if (function_exists('logActivity')) {
-            logActivity('[IPDelivery] upgrade 迁移异常：' . $e->getMessage());
+            logActivity('[OWPProvision] upgrade 迁移异常：' . $e->getMessage());
         }
     }
 }
@@ -191,6 +193,25 @@ function owp_provision_output($vars)
                     case 'device_setup_vpn': // P3：下发 ROS 基础 VPN 配置
                         [$ok, $msg] = owpprov_admin_device_setup_vpn((int) ($_POST['id'] ?? 0));
                         if ($ok) { $notice = 'ROS 基础 VPN 配置已下发：' . $msg; } else { $err = '下发失败：' . $msg; }
+                        break;
+                    // ---- Projects / Blueprints（v3）----
+                    case 'project_seed':
+                        Projects::seedDefaults();
+                        $notice = '默认 Projects / Blueprints 已补齐。';
+                        break;
+                    case 'project_add':
+                        $pid = Projects::save(owpprov_admin_project_from_post());
+                        $notice = '已新增 Project #' . $pid . '。';
+                        break;
+                    case 'project_save':
+                        Projects::save(owpprov_admin_project_from_post((int) ($_POST['id'] ?? 0)));
+                        $notice = '已保存 Project。';
+                        break;
+                    case 'project_toggle':
+                        $p = Projects::get((int) ($_POST['id'] ?? 0));
+                        if (!$p) { throw new \RuntimeException('Project 不存在。'); }
+                        Projects::setEnabled((int) $p->id, (int) $p->enabled !== 1);
+                        $notice = '已切换 Project 启用状态。';
                         break;
                     // ---- 服务器库存 ----
                     case 'server_add':
@@ -257,7 +278,7 @@ function owp_provision_output($vars)
                     case 'pool_save':
                         Pools::updateGroup((int) ($_POST['id'] ?? 0), [
                             'name' => trim((string) ($_POST['name'] ?? '')),
-                            'purpose' => (string) ($_POST['purpose'] ?? 'delivery') === 'vpn' ? 'vpn' : 'delivery',
+                            'purpose' => Pools::normalizePurpose((string) ($_POST['purpose'] ?? 'delivery')),
                             'line_id' => (int) ($_POST['line_id'] ?? 0) ?: null,
                             'device_id' => (int) ($_POST['device_id'] ?? 0) ?: null,
                             'deliver_min' => (int) ($_POST['deliver_min'] ?? 26),
@@ -303,11 +324,147 @@ function owp_provision_output($vars)
     }
 
     echo owpprov_admin_queue_panel($modulelink);
+    echo owpprov_admin_projects_panel($modulelink);
     echo owpprov_admin_devices_panel($modulelink);
     echo owpprov_admin_lines_pools_panel($modulelink);
     echo owpprov_admin_servers_panel($modulelink);
     echo owpprov_admin_resources_panel($modulelink);
     echo owpprov_admin_allocations_panel($modulelink);
+}
+
+// ============================================================================
+// 面板：Projects / Blueprints
+// ============================================================================
+
+function owpprov_admin_projects_panel(string $modulelink): string
+{
+    Projects::seedDefaults();
+    $projects = Projects::all();
+    $html  = '<div class="ipd-card"><h3>Projects / Blueprints</h3>';
+    $html .= '<p style="color:#666;font-size:12px">Project 是 WHMCS 产品上层蓝图：产品可填 <code>project_key</code>，或留空继续由旧 <code>serviceModel + delivery_type + line</code> 推导。'
+        . 'Feature 决定启用 server binding、IPv4/IPv6、XC/GRE、L2TP/IPMI VPN 等步骤；下方旧 Devices / Lines / Pools / Servers 仍是底层资源入口。</p>';
+    $html .= owpprov_admin_mini_form($modulelink, 'project_seed', [], '补齐默认项目', 'btn-default');
+    $html .= '<table class="table table-condensed table-striped" style="margin-top:8px"><thead><tr>'
+        . '<th>ID</th><th>Key</th><th>Name</th><th>Model</th><th>Delivery</th><th>Features</th><th>Bindings</th><th>启用</th><th>操作</th>'
+        . '</tr></thead><tbody>';
+    foreach ($projects as $p) {
+        $features = Projects::features($p);
+        $bindings = Projects::bindings($p);
+        $bindingSummary = [];
+        foreach (['line_name', 'line_id', 'device_id', 'ipv4_pool_group_id', 'ipv6_pool_group_id', 'vpn_device_id', 'vpn_pool_group_id', 'ipv6_prefix_default', 'protocols'] as $k) {
+            if (array_key_exists($k, $bindings) && $bindings[$k] !== '' && $bindings[$k] !== [] && $bindings[$k] !== null) {
+                $v = is_array($bindings[$k]) ? implode(',', array_map('strval', $bindings[$k])) : (string) $bindings[$k];
+                $bindingSummary[] = $k . '=' . $v;
+            }
+        }
+        $html .= '<tr><td>#' . (int) $p->id . '</td>'
+            . '<td><code>' . htmlspecialchars((string) $p->project_key, ENT_QUOTES) . '</code></td>'
+            . '<td><strong>' . htmlspecialchars((string) $p->name, ENT_QUOTES) . '</strong></td>'
+            . '<td>' . htmlspecialchars((string) $p->service_model, ENT_QUOTES) . '</td>'
+            . '<td>' . htmlspecialchars((string) ($p->default_delivery_type ?? ''), ENT_QUOTES) . '</td>'
+            . '<td><small>' . htmlspecialchars(implode(', ', $features), ENT_QUOTES) . '</small></td>'
+            . '<td><small>' . htmlspecialchars(implode(' · ', $bindingSummary), ENT_QUOTES) . '</small></td>'
+            . '<td>' . ((int) $p->enabled === 1 ? '✅' : '—') . '</td>'
+            . '<td>' . owpprov_admin_mini_form($modulelink, 'project_toggle', ['id' => (int) $p->id], (int) $p->enabled === 1 ? '停用' : '启用', 'btn-default') . '</td></tr>';
+    }
+    if (!$projects) {
+        $html .= '<tr><td colspan="9"><em>暂无项目。点击「补齐默认项目」。</em></td></tr>';
+    }
+    $html .= '</tbody></table>';
+
+    foreach ($projects as $p) {
+        $html .= '<details class="ipd-dev"><summary>编辑 Project：<code>' . htmlspecialchars((string) $p->project_key, ENT_QUOTES) . '</code></summary>'
+            . owpprov_admin_project_form($modulelink, $p) . '</details>';
+    }
+    $html .= '<details class="ipd-dev"><summary><strong>＋ 新增 Project / Blueprint</strong></summary>'
+        . owpprov_admin_project_form($modulelink, null) . '</details>';
+    $html .= '</div>';
+    return $html;
+}
+
+function owpprov_admin_project_form(string $modulelink, ?object $p): string
+{
+    $isNew = $p === null;
+    $act = $isNew ? 'project_add' : 'project_save';
+    $features = $p ? Projects::features($p) : [];
+    $bindings = $p ? Projects::bindings($p) : [];
+    $val = static function (string $f, string $d = '') use ($p): string {
+        return htmlspecialchars((string) ($p->{$f} ?? $d), ENT_QUOTES);
+    };
+    $bind = static function (string $f, string $d = '') use ($bindings): string {
+        $v = $bindings[$f] ?? $d;
+        if (is_array($v)) {
+            $v = implode(',', array_map('strval', $v));
+        }
+        return htmlspecialchars((string) $v, ENT_QUOTES);
+    };
+    $sel = static function (string $field, string $opt, string $default = '') use ($p): string {
+        return (string) ($p->{$field} ?? $default) === $opt ? ' selected' : '';
+    };
+    $featureHtml = '';
+    foreach (Projects::FEATURES as $k => $label) {
+        $checked = in_array($k, $features, true) ? ' checked' : '';
+        $featureHtml .= '<label class="ipd-chk" style="display:inline-block;margin-right:10px"><input type="checkbox" name="features[]" value="' . htmlspecialchars($k, ENT_QUOTES) . '"' . $checked . '> ' . htmlspecialchars($k, ENT_QUOTES) . '</label>';
+    }
+    $url = htmlspecialchars($modulelink, ENT_QUOTES) . '&action=' . $act;
+    $h = '<form method="post" action="' . $url . '" class="ipd-dev-form">' . owpprov_admin_token_field()
+        . '<input type="hidden" name="action" value="' . $act . '" />';
+    if (!$isNew) {
+        $h .= '<input type="hidden" name="id" value="' . (int) $p->id . '" />';
+    }
+    $h .= '<div class="ipd-grid">'
+        . owpprov_field('project_key', 'Project Key', $val('project_key'), 'text', 'ASCII key, e.g. dedicated_hkbgp_cn')
+        . owpprov_field('name', 'Name', $val('name'), 'text', 'Display name')
+        . '<div class="ipd-f"><label>Service Model</label><select name="service_model" class="form-control">'
+        . '<option value="server"' . $sel('service_model', 'server') . '>server</option>'
+        . '<option value="ip_transit"' . $sel('service_model', 'ip_transit', 'ip_transit') . '>ip_transit</option>'
+        . '<option value="vpn"' . $sel('service_model', 'vpn') . '>vpn</option></select></div>'
+        . '<div class="ipd-f"><label>Default Delivery Type</label><select name="default_delivery_type" class="form-control">'
+        . '<option value="server"' . $sel('default_delivery_type', 'server') . '>server</option>'
+        . '<option value="xc"' . $sel('default_delivery_type', 'xc') . '>xc</option>'
+        . '<option value="gre"' . $sel('default_delivery_type', 'gre') . '>gre</option>'
+        . '<option value="vpn"' . $sel('default_delivery_type', 'vpn') . '>vpn</option></select></div>'
+        . owpprov_field('line_name', 'Line Name', $bind('line_name'), 'text', 'HKBGP / HKBGP-CN; empty = use configurable option line')
+        . owpprov_field('line_id', 'Line ID', $bind('line_id'), 'text', 'Optional numeric mod_owp_provision_lines.id')
+        . owpprov_field('device_id', 'Device ID', $bind('device_id'), 'text', 'Optional VRP/ROS device binding')
+        . owpprov_field('ipv4_pool_group_id', 'IPv4 Pool Group ID', $bind('ipv4_pool_group_id'), 'text', 'Optional delivery pool group')
+        . owpprov_field('ipv6_pool_group_id', 'IPv6 Pool Group ID', $bind('ipv6_pool_group_id'), 'text', 'Optional purpose=ipv6 pool group')
+        . owpprov_field('vpn_device_id', 'VPN Device ID', $bind('vpn_device_id'), 'text', 'ROS device for standalone or IPMI VPN')
+        . owpprov_field('vpn_pool_group_id', 'VPN Pool Group ID', $bind('vpn_pool_group_id'), 'text', 'Reserved binding; current code selects by ROS device')
+        . owpprov_field('ipv6_prefix_default', 'Default IPv6 Prefix Count', $bind('ipv6_prefix_default', '0'), 'text', 'Dedicated defaults to 1')
+        . owpprov_field('protocols', 'Enabled VPN Protocols', $bind('protocols', 'l2tp'), 'text', 'Comma separated: l2tp,openvpn,ikev2')
+        . '<div class="ipd-f"><label>启用 / Enabled</label><label class="ipd-chk"><input type="checkbox" name="enabled" value="1"' . (!$p || (int) $p->enabled === 1 ? ' checked' : '') . '> 启用</label></div>'
+        . '</div>';
+    $h .= '<div class="ipd-f" style="margin-top:8px"><label>Features</label><div>' . $featureHtml . '</div></div>';
+    $h .= '<div class="ipd-f" style="margin-top:8px"><label>Notes</label><textarea name="notes" class="form-control" rows="2">' . $val('notes') . '</textarea></div>';
+    $h .= '<div style="margin-top:10px"><button class="btn btn-primary" type="submit">' . ($isNew ? '新增 Project' : '保存 Project') . '</button></div></form>';
+    return $h;
+}
+
+function owpprov_admin_project_from_post(int $id = 0): array
+{
+    $protocols = array_values(array_filter(array_map('trim', explode(',', (string) ($_POST['protocols'] ?? '')))));
+    return [
+        'id' => $id,
+        'project_key' => trim((string) ($_POST['project_key'] ?? '')),
+        'name' => trim((string) ($_POST['name'] ?? '')),
+        'service_model' => in_array((string) ($_POST['service_model'] ?? ''), ['server', 'ip_transit', 'vpn'], true) ? (string) $_POST['service_model'] : 'ip_transit',
+        'default_delivery_type' => in_array((string) ($_POST['default_delivery_type'] ?? ''), ['server', 'xc', 'gre', 'vpn'], true) ? (string) $_POST['default_delivery_type'] : 'xc',
+        'features' => is_array($_POST['features'] ?? null) ? $_POST['features'] : [],
+        'bindings' => [
+            'line_name' => trim((string) ($_POST['line_name'] ?? '')),
+            'line_id' => (int) ($_POST['line_id'] ?? 0) ?: null,
+            'device_id' => (int) ($_POST['device_id'] ?? 0) ?: null,
+            'ipv4_pool_group_id' => (int) ($_POST['ipv4_pool_group_id'] ?? 0) ?: null,
+            'ipv6_pool_group_id' => (int) ($_POST['ipv6_pool_group_id'] ?? 0) ?: null,
+            'vpn_device_id' => (int) ($_POST['vpn_device_id'] ?? 0) ?: null,
+            'vpn_pool_group_id' => (int) ($_POST['vpn_pool_group_id'] ?? 0) ?: null,
+            'ipv6_prefix_default' => max(0, (int) ($_POST['ipv6_prefix_default'] ?? 0)),
+            'protocols' => $protocols,
+        ],
+        'enabled' => !empty($_POST['enabled']) ? 1 : 0,
+        'notes' => trim((string) ($_POST['notes'] ?? '')),
+    ];
 }
 
 // ============================================================================
@@ -1408,7 +1565,7 @@ function owpprov_admin_res_mask_from_post(string $kind): ?int
 function owpprov_admin_log_forced(string $action, int $devId, string $kind, string $detail): void
 {
     if (function_exists('logActivity')) {
-        logActivity('[IPDelivery] ⚠ 强制保存资源（绕过校验）：' . $action . ' device#' . $devId . ' ' . $kind . ' ' . $detail);
+        logActivity('[OWPProvision] ⚠ 强制保存资源（绕过校验）：' . $action . ' device#' . $devId . ' ' . $kind . ' ' . $detail);
     }
 }
 
@@ -1573,7 +1730,8 @@ function owpprov_admin_pool_form(string $modulelink, ?object $g, array $lines, a
         . owpprov_field('name', '池组名 / Name', $val('name'), 'text', '如 HK 交付池')
         . '<div class="ipd-f"><label>用途 / Purpose</label><select name="purpose" class="form-control">'
             . '<option value="delivery"' . $psel('delivery') . '>delivery（交付公网段）</option>'
-            . '<option value="vpn"' . $psel('vpn') . '>vpn（VPN 客户 /32）</option></select></div>'
+            . '<option value="vpn"' . $psel('vpn') . '>vpn（VPN 客户 /32）</option>'
+            . '<option value="ipv6"' . $psel('ipv6') . '>ipv6（IPv6 Prefix，例如 /64）</option></select></div>'
         . '<div class="ipd-f"><label>线路 / Line（交付）</label><select name="line_id" class="form-control">' . $lineOpts . '</select></div>'
         . '<div class="ipd-f"><label>落地设备 / Device</label><select name="device_id" class="form-control">' . $devOpts . '</select></div>'
         . owpprov_field('deliver_min', '最大块掩码 / min len（如 26）', $val('deliver_min', '26'), 'text', '允许最大块=最小掩码长度')

@@ -76,9 +76,9 @@ class Ipam
      * @return array 分配结果（与 allocations 行同结构的关联数组）
      * @throws \RuntimeException 池不足/冲突时
      */
-    public static function allocateXc(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, ?string $wantPort = null): array
+    public static function allocateXc(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, ?string $wantPort = null, ?int $poolGroupId = null): array
     {
-        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $wantPort) {
+        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $wantPort, $poolGroupId) {
             $existing = self::lockAllocation($serviceId);
             if ($existing && $existing->status !== 'terminated') {
                 return (array) $existing; // 幂等复用
@@ -87,7 +87,7 @@ class Ipam
             $maskLen = self::normalizeMaskLen($prefixSize);
             $vlan    = self::pickFreeVlan($deviceId);
             $ptp     = self::pickFreePtp30($deviceId);
-            $prefix  = self::pickFreePrefix($deviceId, $maskLen);
+            $prefix  = self::pickFreePrefix($deviceId, $maskLen, null, $poolGroupId);
             $port    = self::pickFreePort($deviceId, $wantPort);
 
             $row = [
@@ -120,9 +120,9 @@ class Ipam
      * @param string $port 服务器 NIC 线缆到的固定端口（须为该设备 port 资源且空闲）
      * @throws \RuntimeException
      */
-    public static function allocateServer(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, string $port, ?int $lineId = null): array
+    public static function allocateServer(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, string $port, ?int $lineId = null, ?int $poolGroupId = null): array
     {
-        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $prefixSize, $bandwidth, $port, $lineId) {
+        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $prefixSize, $bandwidth, $port, $lineId, $poolGroupId) {
             $existing = self::lockAllocation($serviceId);
             if ($existing && $existing->status !== 'terminated') {
                 return (array) $existing; // 幂等复用
@@ -133,7 +133,7 @@ class Ipam
                 throw new \RuntimeException('服务器交付不支持 /32（需直连子网，请用 /30~/28，默认 /29）。');
             }
             $vlan    = self::pickFreeVlan($deviceId);
-            $prefix  = self::pickFreePrefix($deviceId, $maskLen, $lineId); // P8/P11：线路驱动池组分配
+            $prefix  = self::pickFreePrefix($deviceId, $maskLen, $lineId, $poolGroupId); // P8/P11：线路/Project 池组分配
             $portN   = self::pickFreePort($deviceId, $port); // 服务器固定口（须为该设备 port 资源且空闲）
 
             $row = [
@@ -166,9 +166,9 @@ class Ipam
      * @return array
      * @throws \RuntimeException
      */
-    public static function allocateGre(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, string $remoteIp): array
+    public static function allocateGre(int $serviceId, int $deviceId, string $custTag, string $prefixSize, string $bandwidth, string $remoteIp, ?int $poolGroupId = null): array
     {
-        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $remoteIp) {
+        return Capsule::connection()->transaction(function () use ($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $remoteIp, $poolGroupId) {
             $existing = self::lockAllocation($serviceId);
             if ($existing && $existing->status !== 'terminated') {
                 // 幂等复用；但允许刷新 remote_ip（客户可能在下单后改过）
@@ -182,7 +182,7 @@ class Ipam
 
             $maskLen  = self::normalizeMaskLen($prefixSize);
             $ptp      = self::pickFreePtp30($deviceId);
-            $prefix   = self::pickFreePrefix($deviceId, $maskLen);
+            $prefix   = self::pickFreePrefix($deviceId, $maskLen, null, $poolGroupId);
             $loopback = self::pickFreeLoopback32($deviceId);
             $tunnelId = self::pickFreeTunnelId($deviceId);
             $aclId    = self::pickFreeAclId($deviceId); // GRE 限速用高级 ACL
@@ -218,6 +218,11 @@ class Ipam
     {
         Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)
             ->update(['status' => $status, 'updated_at' => date('Y-m-d H:i:s')]);
+        if (Capsule::schema()->hasTable(Schema::T_IPV6_ALLOC) && in_array($status, ['active', 'suspended'], true)) {
+            Capsule::table(Schema::T_IPV6_ALLOC)->where('serviceid', $serviceId)
+                ->where('status', '!=', 'terminated')
+                ->update(['status' => $status, 'updated_at' => date('Y-m-d H:i:s')]);
+        }
     }
 
     /**
@@ -228,6 +233,107 @@ class Ipam
     {
         Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)
             ->update(['status' => 'terminated', 'updated_at' => date('Y-m-d H:i:s')]);
+        self::releaseIpv6($serviceId);
+    }
+
+    /**
+     * Ensure a service owns N active IPv6 prefixes. Existing active prefixes are
+     * reused; missing prefixes are allocated from the selected ipv6 pool group.
+     *
+     * @return string[] active IPv6 CIDRs
+     */
+    public static function ensureIpv6Prefixes(
+        int $serviceId,
+        string $projectKey,
+        ?int $allocationId,
+        ?int $lineId,
+        ?int $deviceId,
+        int $count,
+        ?int $preferredGroupId = null,
+        int $maskLen = 64
+    ): array {
+        if ($count <= 0) {
+            return [];
+        }
+        return Capsule::connection()->transaction(function () use ($serviceId, $projectKey, $allocationId, $lineId, $deviceId, $count, $preferredGroupId, $maskLen) {
+            $existing = self::ipv6ForService($serviceId, false, true);
+            if (count($existing) >= $count) {
+                self::syncIpv6Summary($serviceId, $existing);
+                return array_slice($existing, 0, $count);
+            }
+            $group = Pools::findIpv6Group($deviceId, $lineId, $preferredGroupId);
+            if (!$group) {
+                throw new \RuntimeException('未找到可用 IPv6 池组。请在 Projects/Blueprints 绑定 ipv6_pool_group_id，或为该线路/设备建 purpose=ipv6 的池组。');
+            }
+            $prefixes = $existing;
+            $now = date('Y-m-d H:i:s');
+            while (count($prefixes) < $count) {
+                $cidr = Pools::allocateIpv6($group, $maskLen, $prefixes);
+                Capsule::table(Schema::T_IPV6_ALLOC)->insert([
+                    'serviceid' => $serviceId,
+                    'allocation_id' => $allocationId,
+                    'project_key' => $projectKey,
+                    'line_id' => $lineId,
+                    'group_id' => (int) $group->id,
+                    'cidr' => $cidr,
+                    'status' => 'active',
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+                $prefixes[] = $cidr;
+            }
+            self::syncIpv6Summary($serviceId, $prefixes);
+            return $prefixes;
+        });
+    }
+
+    /** @return string[] */
+    public static function ipv6ForService(int $serviceId, bool $includeTerminated = false, bool $lock = false): array
+    {
+        if (!Capsule::schema()->hasTable(Schema::T_IPV6_ALLOC)) {
+            return [];
+        }
+        $q = Capsule::table(Schema::T_IPV6_ALLOC)->where('serviceid', $serviceId);
+        if (!$includeTerminated) {
+            $q->where('status', '!=', 'terminated');
+        }
+        if ($lock) {
+            $q->lockForUpdate();
+        }
+        $out = [];
+        foreach ($q->orderBy('id')->pluck('cidr') as $cidr) {
+            $cidr = trim((string) $cidr);
+            if ($cidr !== '') {
+                $out[] = $cidr;
+            }
+        }
+        return $out;
+    }
+
+    public static function releaseIpv6(int $serviceId): void
+    {
+        if (!Capsule::schema()->hasTable(Schema::T_IPV6_ALLOC)) {
+            return;
+        }
+        Capsule::table(Schema::T_IPV6_ALLOC)->where('serviceid', $serviceId)
+            ->where('status', '!=', 'terminated')
+            ->update(['status' => 'terminated', 'updated_at' => date('Y-m-d H:i:s')]);
+        self::syncIpv6Summary($serviceId, []);
+    }
+
+    /** @param string[] $prefixes */
+    private static function syncIpv6Summary(int $serviceId, array $prefixes): void
+    {
+        try {
+            if (!Capsule::schema()->hasColumn(Schema::T_ALLOCATIONS, 'ipv6_prefixes')) {
+                return;
+            }
+            Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)->update([
+                'ipv6_prefixes' => json_encode(array_values($prefixes), JSON_UNESCAPED_SLASHES),
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]);
+        } catch (\Throwable $e) {
+        }
     }
 
     /**
@@ -331,11 +437,11 @@ class Ipam
      * @return string 'a.b.c.d/NN'
      * @throws \RuntimeException
      */
-    public static function pickFreePrefix(int $deviceId, int $maskLen, ?int $lineId = null): string
+    public static function pickFreePrefix(int $deviceId, int $maskLen, ?int $lineId = null, ?int $poolGroupId = null): string
     {
         // P11：优先用「池组」按需对齐分配（不预切、空闲实时算、无碎片）；该设备/线路无池组时回退旧
         // 清单式 Resources + carve（向后兼容，平滑迁移）。线路驱动见 P8（lineId）。
-        $group = Pools::findDeliveryGroup($deviceId, $lineId);
+        $group = Pools::findDeliveryGroup($deviceId, $lineId, $poolGroupId);
         if ($group !== null && !empty(Pools::blocks((int) $group->id))) {
             return Pools::allocate($group, $maskLen);
         }
@@ -464,11 +570,18 @@ class Ipam
      * VPN 客户地址：从 ROS 设备的 vpn_ip 清单挑一条空闲（返回裸 IP /32）。占用按 allocations.vpn_ip 算。
      * @throws \RuntimeException
      */
-    public static function pickFreeVpnIp(int $rosDeviceId): string
+    public static function pickFreeVpnIp(int $rosDeviceId, ?int $poolGroupId = null): string
     {
         // P3/P11：优先用 VPN 池组（purpose=vpn）按需发 /32，排除本端地址 /32（ros_l2tp_local）；
         // 无池组则回退旧清单式 Resources vpn_ip（向后兼容）。
-        $group = Pools::findVpnGroup($rosDeviceId);
+        $group = null;
+        if ($poolGroupId && $poolGroupId > 0) {
+            $g = Pools::group($poolGroupId);
+            $group = ($g && (string) $g->purpose === 'vpn' && (int) $g->enabled === 1) ? $g : null;
+        }
+        if ($group === null) {
+            $group = Pools::findVpnGroup($rosDeviceId);
+        }
         if ($group !== null && !empty(Pools::blocks((int) $group->id))) {
             $exclude = [];
             $dev   = Devices::get($rosDeviceId);
@@ -476,7 +589,7 @@ class Ipam
             if ($local !== '') {
                 $exclude[] = $local . '/32'; // 本端地址从可分配池排除，避免撞客户池（P3 取「排除」方案）
             }
-            return Pools::allocate($group, 32, $exclude);
+            return self::stripHostCidr(Pools::allocate($group, 32, $exclude));
         }
         foreach (Resources::freeItems($rosDeviceId, 'vpn_ip') as $r) {
             return (string) $r->value;
@@ -491,7 +604,7 @@ class Ipam
      *
      * @throws \RuntimeException 无可用 vpn_ip 时
      */
-    public static function pickOrReuseVpnIp(int $rosDeviceId, int $serviceId): string
+    public static function pickOrReuseVpnIp(int $rosDeviceId, int $serviceId, ?int $poolGroupId = null): string
     {
         $row      = self::getAllocation($serviceId);
         $existing = $row ? trim((string) (((array) $row)['vpn_ip'] ?? '')) : '';
@@ -502,7 +615,7 @@ class Ipam
             && (Pools::findVpnGroup($rosDeviceId) !== null || self::vpnIpInInventory($rosDeviceId, $existing))) {
             return $existing; // 复用本服务已有地址
         }
-        return self::pickFreeVpnIp($rosDeviceId);
+        return self::pickFreeVpnIp($rosDeviceId, $poolGroupId);
     }
 
     /** 该 ROS 的 vpn_ip 清单里是否有「启用」的此地址。 */
@@ -525,6 +638,14 @@ class Ipam
             ->where('serviceid', '!=', $exceptServiceId)
             ->where('status', '!=', 'terminated')
             ->exists();
+    }
+
+    /** VPN 下发给 RouterOS 的 remote-address 保持旧模型：裸 IPv4，不带 /32。 */
+    private static function stripHostCidr(string $cidrOrIp): string
+    {
+        $s = trim($cidrOrIp);
+        $pos = strpos($s, '/');
+        return $pos === false ? $s : substr($s, 0, $pos);
     }
 
     /**

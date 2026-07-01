@@ -1,6 +1,6 @@
 <?php
 /**
- * IP-Delivery — WHMCS Server / Provisioning Module
+ * OWP Provision — WHMCS Server / Provisioning Module
  * ============================================================================
  * 客户在 WHMCS 下单后，自动 SSH 到接入交换机 接入交换机，开通「XC（VLAN+端口+
  * Vlanif/PTP）或 GRE（隧道）方式交付的一段公网 IP」，并用 traffic-policy 限速；
@@ -38,6 +38,10 @@ use OwpProvision\Ipam;
 use OwpProvision\Templates;
 use OwpProvision\Connection;
 use OwpProvision\Types;
+use OwpProvision\Projects;
+use OwpProvision\BlueprintContext;
+use OwpProvision\CallbackFeatureStep;
+use OwpProvision\FeatureStepRunner;
 use OwpProvision\Orchestrator;
 use OwpProvision\Drivers\VrpDriver;
 use OwpProvision\Drivers\RosDriver;
@@ -53,6 +57,8 @@ require_once __DIR__ . '/lib/Config.php';
 require_once __DIR__ . '/lib/Devices.php';
 require_once __DIR__ . '/lib/Servers.php';
 require_once __DIR__ . '/lib/Types.php';
+require_once __DIR__ . '/lib/Projects.php';
+require_once __DIR__ . '/lib/FeatureSteps.php';
 require_once __DIR__ . '/lib/Ipam.php';
 require_once __DIR__ . '/lib/Pools.php';
 require_once __DIR__ . '/lib/Lines.php';
@@ -77,7 +83,7 @@ require_once __DIR__ . '/lib/Drivers/DracDriver.php';
 function owp_provision_MetaData()
 {
     return [
-        'DisplayName'             => 'IP Delivery',
+        'DisplayName'             => 'OWP Provision',
         'APIVersion'             => '1.1',
         'RequiresServer'         => false, // 连接配置在 addon；不需要 WHMCS Server 条目
         'DefaultNonSSLPort'      => '',
@@ -88,8 +94,8 @@ function owp_provision_MetaData()
 
 /**
  * 模块级 ConfigOptions（产品 Module Settings 里设；configoption1..N）。
- * 顺序很重要：WHMCS 以 configoption1..N 传入。这里定义 4 个：
- *   1 defaultBw  2 defaultPrefix  3 namingPrefix  4 dryRun
+ * 顺序很重要：WHMCS 以 configoption1..N 传入。这里定义 6 个：
+ *   1 defaultBw  2 defaultPrefix  3 namingPrefix  4 dryRun  5 serviceModel  6 projectKey
  * @return array
  */
 function owp_provision_ConfigOptions()
@@ -129,9 +135,17 @@ function owp_provision_ConfigOptions()
         'serviceModel' => [
             'FriendlyName' => 'Service Model 服务形态',
             'Type'         => 'dropdown',
-            'Options'      => 'ip_transit,server',
+            'Options'      => 'ip_transit,server,vpn',
             'Default'      => 'ip_transit',
-            'Description'  => 'ip_transit = 纯 IP 交付（XC/GRE，客户自带设备）；server = 租赁/托管服务器（选服务器→绑端口+发IP+开 IPMI VPN）。',
+            'Description'  => '兼容旧产品。新产品建议用 Project Key 绑定蓝图；未填 project_key 时仍从此字段推导。',
+        ],
+        // configoption6
+        'projectKey' => [
+            'FriendlyName' => 'Project Key / Blueprint',
+            'Type'         => 'text',
+            'Size'         => '32',
+            'Default'      => '',
+            'Description'  => '可填 dedicated_hkbgp / dedicated_hkbgp_cn / ip_transit_xc / ip_transit_gre / vpn_l2tp。空=兼容旧 serviceModel + delivery_type 推导。',
         ],
     ];
 }
@@ -165,127 +179,16 @@ function owp_provision_CreateAccount(array $params)
             return 'success';
         }
 
-        // 服务形态分流：server=租赁/托管（绑服务器+发IP+开 IPMI VPN）；否则走纯 IP 交付（XC/GRE）。
-        if (strtolower((string) ($params['configoption5'] ?? 'ip_transit')) === 'server') {
-            return owpprov_create_server($params);
+        $project = Projects::resolve($params);
+        if (!$project) {
+            return 'Error: 找不到 Project/Blueprint：' . Projects::resolveKey($params)
+                . '。请在 addon「Projects / Blueprints」确认项目存在并启用。';
+        }
+        if ((int) ($project->enabled ?? 0) !== 1) {
+            return 'Error: Project/Blueprint 已停用：' . (string) $project->project_key;
         }
 
-        // 1) 读参数
-        $deliveryType = strtolower(owpprov_pluck_co($params, ['delivery_type', 'Delivery Type'], owpprov_default_delivery($params)));
-        $bandwidth    = owpprov_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
-        $prefixSize   = owpprov_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/32'));
-        $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
-        $remoteIp     = trim(owpprov_pluck_cf($params, ['Remote Endpoint IP', 'Remote IP'], ''));
-        $wantPort     = trim(owpprov_pluck_cf($params, ['XC Port', 'Port'], ''));
-        $nodeSel      = owpprov_pluck_co($params, ['node', 'Node', 'device', 'Device', '节点'], '');
-        $clientName   = owpprov_client_name($params);
-        $custTag      = Templates::custTag($namingPrefix, $serviceId, $clientName);
-
-        // 节点（设备）确定：下单所选 → 单设备免选默认。无法确定/未启用即报错。
-        $deviceId = owpprov_resolve_device($params, null, $nodeSel);
-        if ($deviceId <= 0) {
-            return 'Error: 无法确定交付节点。请在产品的 Configurable Option「node」选择一个设备，'
-                . '或在 addon「设备」页启用唯一设备（单设备时免选）。';
-        }
-        if (!Devices::isEnabled($deviceId)) {
-            return 'Error: 所选节点（设备 #' . $deviceId . '）不存在或已停用，请重新选择。';
-        }
-
-        // 交付类型走注册表：必须已定义且启用；前端下单还要 frontend 开放（admin 后台手动 Create 不受此限）。
-        $typeDef = Types::get($deliveryType);
-        if ($typeDef === null || !Types::isEnabled($deliveryType)) {
-            return 'Error: 交付类型「' . $deliveryType . '」未定义或未启用。请检查 Configurable Option「delivery_type」与 addon「启用类型」配置。';
-        }
-        $isAdminCtx = !empty($_SESSION['adminid']); // 管理员后台手动 Create → 允许开通未开放前端的类型（如测试 GRE）
-        if (!$isAdminCtx && !Types::isFrontend($deliveryType)) {
-            return 'Error: 交付类型「' . strtoupper($deliveryType) . '」暂未开放下单。';
-        }
-
-        // 2) 校验
-        if ($deliveryType === 'gre') {
-            if ($remoteIp === '' || !Ipam::isPublicIpv4($remoteIp)) {
-                return 'Error: GRE 交付必须在自定义字段「Remote Endpoint IP」填写合法的公网 IPv4 对端地址。';
-            }
-        }
-        // 带宽必须能换算（提前失败，别等到下发）
-        try {
-            Templates::bandwidthToCirKbps($bandwidth);
-        } catch (\Throwable $e) {
-            return 'Error: 带宽档无法换算 CIR：' . $e->getMessage();
-        }
-
-        // 3)–9) 取全局锁串行执行（分配→连接→下发→校验→回写）；失败回滚+释放，每步落 oplog。
-        return Orchestrator::withLock(function () use ($params, $serviceId, $deliveryType, $bandwidth, $prefixSize, $remoteIp, $wantPort, $custTag, $deviceId) {
-            // 3) 事务分配资源（从所选设备的资源池分配，写 allocation.device_id）
-            try {
-                if ($deliveryType === 'xc') {
-                    $alloc = Ipam::allocateXc($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $wantPort !== '' ? $wantPort : null);
-                } else {
-                    $alloc = Ipam::allocateGre($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $remoteIp);
-                }
-            } catch (\Throwable $e) {
-                Orchestrator::log($serviceId, 'create', 'allocate', $deviceId, 'failed', '', $e->getMessage());
-                owpprov_log(__FUNCTION__, $params, '', '分配失败：' . $e->getMessage());
-                return 'Error: 资源分配失败：' . $e->getMessage();
-            }
-            $deviceId = (int) ($alloc['device_id'] ?? $deviceId); // 幂等复用旧分配时以记录为准
-            Orchestrator::log($serviceId, 'create', 'allocate', $deviceId, 'ok', '', json_encode(
-                ['type' => $alloc['delivery_type'] ?? '', 'prefix' => $alloc['prefix'] ?? '', 'vlan' => $alloc['vlan_id'] ?? null, 'port' => $alloc['port'] ?? null],
-                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-            ));
-
-            // 4) 驱动（按本服务设备；dry-run 时不触设备）
-            $drv   = owpprov_vrp($params, $deviceId);
-            $isDry = $drv->isDryRun();
-
-            // 5) 幂等预检（非 dry-run 才真读；失败不致命）
-            if (!$isDry) {
-                try {
-                    $pre = $drv->runDisplay(array_values(Templates::verifyCommands($alloc)));
-                    owpprov_log(__FUNCTION__ . ':precheck', $params, '', $pre);
-                } catch (\Throwable $e) {
-                    owpprov_log(__FUNCTION__ . ':precheck', $params, '', '预检读失败（忽略）：' . $e->getMessage());
-                }
-            }
-
-            // 6–7) 渲染 + 下发（VrpDriver 按类型分发，含 save+Y；dry-run 只记日志）
-            $res = $drv->provision($alloc, $custTag);
-            logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $res['output'], $res['block']);
-
-            if ($res['dryrun']) {
-                Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'dryrun', '', '(dry-run，仅渲染)');
-                owpprov_writeback_customfields($params, $alloc);
-                return 'success';
-            }
-            if (!$res['ok']) {
-                Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'failed', '', (string) $res['error']);
-                owpprov_rollback_create($drv, $alloc, $serviceId); // 尽力拆除已下发部分 + 释放分配
-                Orchestrator::log($serviceId, 'create', 'rollback', $deviceId, 'rollback', '', '已尝试拆除+释放分配');
-                return 'Error: 下发失败，已尝试回滚并释放分配：' . $res['error'];
-            }
-            Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'ok', '', 'save 成功');
-
-            // 8) 校验回读（顾问性，不作为回滚依据——客户侧多半未就绪）
-            $verify = $drv->verifyDelivery($alloc);
-            Orchestrator::log($serviceId, 'create', 'verify', $deviceId, $verify['ok'] ? 'ok' : 'failed', '', $verify['ok'] ? 'liveness OK' : (string) $verify['error']);
-            if (!$verify['ok']) {
-                logModuleCall('owp_provision', __FUNCTION__ . ':verify-advisory',
-                    ['serviceid' => $serviceId], (string) ($verify['detail'] ?? ''),
-                    '已下发并保存；liveness 暂未通过（通常因客户侧未就绪，非错误）：' . $verify['error']);
-                if (function_exists('logActivity')) {
-                    logActivity('[OWP Provision] 服务 #' . $serviceId . ' 配置已下发并保存；'
-                        . 'liveness 暂未通过（多因客户侧未就绪，可稍后 Verify 复检）：' . $verify['error']);
-                }
-            }
-
-            // 9) 回写 custom fields + 活动日志
-            owpprov_writeback_customfields($params, $alloc);
-            if (function_exists('logActivity')) {
-                logActivity('[OWP Provision] 服务 #' . $serviceId . ' 已开通（' . strtoupper($deliveryType)
-                    . '，prefix=' . ($alloc['prefix'] ?? '') . '）。');
-            }
-            return 'success';
-        });
+        return owpprov_create_by_project($params, $project);
 
     } catch (\Throwable $e) {
         logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
@@ -305,6 +208,11 @@ function owp_provision_SuspendAccount(array $params)
         $alloc = owpprov_alloc_or_fail($serviceId);
         if (is_string($alloc)) {
             return $alloc;
+        }
+        if ((string) ($alloc->delivery_type ?? '') === 'vpn') {
+            Ipam::setStatus($serviceId, 'suspended');
+            Orchestrator::log($serviceId, 'suspend', 'vpn.status', (int) ($alloc->vpn_device_id ?? 0), 'ok', '', 'standalone VPN status suspended; device objects retained');
+            return 'success';
         }
 
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
@@ -338,6 +246,11 @@ function owp_provision_UnsuspendAccount(array $params)
         $alloc = owpprov_alloc_or_fail($serviceId);
         if (is_string($alloc)) {
             return $alloc;
+        }
+        if ((string) ($alloc->delivery_type ?? '') === 'vpn') {
+            Ipam::setStatus($serviceId, 'active');
+            Orchestrator::log($serviceId, 'unsuspend', 'vpn.status', (int) ($alloc->vpn_device_id ?? 0), 'ok', '', 'standalone VPN status active; device objects retained');
+            return 'success';
         }
 
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
@@ -375,6 +288,9 @@ function owp_provision_TerminateAccount(array $params)
             return 'success';
         }
         $alloc = (array) $allocObj;
+        if (($alloc['delivery_type'] ?? '') === 'vpn') {
+            return owpprov_terminate_vpn_project($params, $alloc);
+        }
 
         return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
             $devId = owpprov_alloc_device($alloc);
@@ -536,7 +452,213 @@ function owp_provision_ChangePackage(array $params)
 }
 
 // ============================================================================
-// 蓝图：服务器租赁 / 托管（serviceModel=server）
+// Project / Blueprint entrypoints
+// ============================================================================
+
+function owpprov_create_by_project(array $params, object $project): string
+{
+    $model = strtolower((string) ($project->service_model ?? $params['configoption5'] ?? 'ip_transit'));
+    $delivery = strtolower((string) ($project->default_delivery_type ?? ''));
+    if ($model === 'vpn' || $delivery === 'vpn' || Projects::hasFeature($project, 'l2tp')) {
+        return owpprov_create_vpn_project($params, $project);
+    }
+    if ($model === 'server' || Projects::hasFeature($project, 'server_binding')) {
+        return owpprov_create_server($params, $project);
+    }
+    return owpprov_create_ip_transit_project($params, $project);
+}
+
+function owpprov_create_ip_transit_project(array $params, object $project): string
+{
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    $projectKey = (string) ($project->project_key ?? Projects::resolveKey($params));
+    $deliveryType = strtolower(owpprov_pluck_co(
+        $params,
+        ['delivery_type', 'Delivery Type'],
+        (string) ($project->default_delivery_type ?? owpprov_default_delivery($params))
+    ));
+    $bandwidth    = owpprov_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
+    $prefixSize   = owpprov_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/32'));
+    $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
+    $remoteIp     = trim(owpprov_pluck_cf($params, ['Remote Endpoint IP', 'Remote IP'], ''));
+    $wantPort     = trim(owpprov_pluck_cf($params, ['XC Port', 'Port'], ''));
+    $nodeSel      = owpprov_pluck_co($params, ['node', 'Node', 'device', 'Device', '节点'], '');
+    $custTag      = Templates::custTag($namingPrefix, $serviceId, owpprov_client_name($params));
+
+    $deviceId = owpprov_resolve_device($params, null, $nodeSel);
+    if ($deviceId <= 0) {
+        return 'Error: 无法确定交付节点。请在产品 Configurable Option「node」选择设备，或只启用唯一设备。';
+    }
+    if (!Devices::isEnabled($deviceId)) {
+        return 'Error: 所选节点（设备 #' . $deviceId . '）不存在或已停用，请重新选择。';
+    }
+    if ($deliveryType === '') {
+        return 'Error: 未指定 delivery_type，且 Project 未提供 default_delivery_type。';
+    }
+    $typeDef = Types::get($deliveryType);
+    if ($typeDef === null || !Types::isEnabled($deliveryType)) {
+        return 'Error: 交付类型「' . $deliveryType . '」未定义或未启用。';
+    }
+    $isAdminCtx = !empty($_SESSION['adminid']);
+    if (!$isAdminCtx && !Types::isFrontend($deliveryType)) {
+        return 'Error: 交付类型「' . strtoupper($deliveryType) . '」暂未开放下单。';
+    }
+    if ($deliveryType === 'gre' && ($remoteIp === '' || !Ipam::isPublicIpv4($remoteIp))) {
+        return 'Error: GRE 交付必须在自定义字段「Remote Endpoint IP」填写合法的公网 IPv4 对端地址。';
+    }
+    try {
+        Templates::bandwidthToCirKbps($bandwidth);
+    } catch (\Throwable $e) {
+        return 'Error: 带宽档无法换算 CIR：' . $e->getMessage();
+    }
+
+    return Orchestrator::withLock(function () use ($params, $project, $projectKey, $serviceId, $deliveryType, $bandwidth, $prefixSize, $remoteIp, $wantPort, $custTag, $deviceId) {
+        try {
+            $alloc = $deliveryType === 'xc'
+                ? Ipam::allocateXc($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $wantPort !== '' ? $wantPort : null, Projects::bindingInt($project, 'ipv4_pool_group_id', 0) ?: null)
+                : Ipam::allocateGre($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $remoteIp, Projects::bindingInt($project, 'ipv4_pool_group_id', 0) ?: null);
+            owpprov_mark_allocation_project($serviceId, $project);
+        } catch (\Throwable $e) {
+            Orchestrator::log($serviceId, 'create', 'allocate', $deviceId, 'failed', '', $e->getMessage());
+            owpprov_log(__FUNCTION__, $params, '', '分配失败：' . $e->getMessage());
+            return 'Error: 资源分配失败：' . $e->getMessage();
+        }
+
+        $deviceId = (int) ($alloc['device_id'] ?? $deviceId);
+        Orchestrator::log($serviceId, 'create', 'allocate', $deviceId, 'ok', '', json_encode(
+            ['project' => $projectKey, 'type' => $alloc['delivery_type'] ?? '', 'prefix' => $alloc['prefix'] ?? '', 'vlan' => $alloc['vlan_id'] ?? null, 'port' => $alloc['port'] ?? null],
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        ));
+
+        $drv = owpprov_vrp($params, $deviceId);
+        if (!$drv->isDryRun()) {
+            try {
+                $pre = $drv->runDisplay(array_values(Templates::verifyCommands($alloc)));
+                owpprov_log(__FUNCTION__ . ':precheck', $params, '', $pre);
+            } catch (\Throwable $e) {
+                owpprov_log(__FUNCTION__ . ':precheck', $params, '', '预检读失败（忽略）：' . $e->getMessage());
+            }
+        }
+
+        $res = $drv->provision($alloc, $custTag);
+        logModuleCall('owp_provision', __FUNCTION__, owpprov_safe_params($params), $res['output'], $res['block']);
+        if (!$res['dryrun'] && !$res['ok']) {
+            Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, 'failed', '', (string) $res['error']);
+            owpprov_rollback_create($drv, $alloc, $serviceId);
+            Orchestrator::log($serviceId, 'create', 'rollback', $deviceId, 'rollback', '', '已尝试拆除+释放分配');
+            return 'Error: 下发失败，已尝试回滚并释放分配：' . $res['error'];
+        }
+        Orchestrator::log($serviceId, 'create', 'vrp.provision', $deviceId, $res['dryrun'] ? 'dryrun' : 'ok', '', $res['dryrun'] ? '(dry-run，仅渲染)' : 'save 成功');
+
+        if (!$res['dryrun']) {
+            $verify = $drv->verifyDelivery($alloc);
+            Orchestrator::log($serviceId, 'create', 'verify', $deviceId, $verify['ok'] ? 'ok' : 'failed', '', $verify['ok'] ? 'liveness OK' : (string) $verify['error']);
+        }
+
+        owpprov_writeback_customfields($params, $alloc);
+        if (function_exists('logActivity')) {
+            logActivity('[OWP Provision] 服务 #' . $serviceId . ' 已开通（project=' . $projectKey . '，' . strtoupper($deliveryType)
+                . '，prefix=' . ($alloc['prefix'] ?? '') . '）。');
+        }
+        return 'success';
+    });
+}
+
+function owpprov_create_vpn_project(array $params, object $project): string
+{
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    if ($serviceId <= 0) {
+        return 'Error: 缺少 serviceid。';
+    }
+    $ctx = new BlueprintContext($params, $project);
+    $steps = [
+        new CallbackFeatureStep('vpn_l2tp', [
+            'validate' => function (BlueprintContext $ctx): void {
+                $rosId = owpprov_project_vpn_device_id($ctx->project);
+                if ($rosId <= 0) {
+                    throw new \RuntimeException('VPN 项目未绑定 ROS 设备，也没有唯一启用的 ROS 设备。');
+                }
+                $ctx->set('ros_id', $rosId);
+                [$user, $pass] = owpprov_ensure_service_credentials($ctx->params);
+                $ctx->set('vpn_user', $user);
+                $ctx->set('vpn_pass', $pass);
+                $ctx->set('vpn_target', trim(owpprov_pluck_cf($ctx->params, ['VPN Target', 'IPMI IP', 'VPN Reachable Target'], '')));
+            },
+            'reserve' => function (BlueprintContext $ctx): void {
+                $rosId = (int) $ctx->get('ros_id');
+                $existing = Ipam::getAllocation($ctx->serviceId);
+                if ($existing && (string) ($existing->status ?? '') !== 'terminated') {
+                    $ctx->set('alloc', (array) $existing);
+                    $ctx->set('vpn_ip', (string) ($existing->vpn_ip ?? ''));
+                    return;
+                }
+                $vpnIp = Ipam::pickFreeVpnIp($rosId, Projects::bindingInt($ctx->project, 'vpn_pool_group_id', 0) ?: null);
+                $now = date('Y-m-d H:i:s');
+                $row = [
+                    'serviceid' => $ctx->serviceId,
+                    'project_key' => $ctx->projectKey(),
+                    'device_id' => $rosId,
+                    'delivery_type' => 'vpn',
+                    'features' => json_encode(Projects::features($ctx->project), JSON_UNESCAPED_SLASHES),
+                    'vpn_device_id' => $rosId,
+                    'vpn_ip' => $vpnIp,
+                    'vpn_target' => (string) $ctx->get('vpn_target', ''),
+                    'vpn_user' => (string) $ctx->get('vpn_user', ''),
+                    'vpn_pass_enc' => Config::encrypt((string) $ctx->get('vpn_pass', '')),
+                    'status' => 'active',
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+                if ($existing) {
+                    $update = $row;
+                    unset($update['serviceid'], $update['created_at']);
+                    Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $ctx->serviceId)->update($update);
+                } else {
+                    Capsule::table(Schema::T_ALLOCATIONS)->insert($row);
+                }
+                $ctx->set('alloc', $row);
+                $ctx->set('vpn_ip', $vpnIp);
+                Orchestrator::log($ctx->serviceId, 'create_vpn', 'reserve', $rosId, 'ok', '', $vpnIp);
+            },
+            'apply' => function (BlueprintContext $ctx): void {
+                $rosId = (int) $ctx->get('ros_id');
+                $target = (string) $ctx->get('vpn_target', '');
+                $res = owpprov_ros($ctx->params, $rosId)->vpnGrant(
+                    $ctx->serviceId,
+                    (string) $ctx->get('vpn_ip', ''),
+                    $target,
+                    (string) $ctx->get('vpn_user', ''),
+                    (string) $ctx->get('vpn_pass', '')
+                );
+                Orchestrator::log($ctx->serviceId, 'create_vpn', 'ros.vpn', $rosId, !empty($res['dryRun']) ? 'dryrun' : 'ok', '', 'protocols=' . implode(',', Projects::protocols($ctx->project)));
+            },
+            'verify' => function (BlueprintContext $ctx): void {
+                Orchestrator::log($ctx->serviceId, 'create_vpn', 'verify', (int) $ctx->get('ros_id'), 'ok', '', 'VPN objects rendered/applied');
+            },
+            'rollback' => function (BlueprintContext $ctx): void {
+                $rosId = (int) $ctx->get('ros_id');
+                if ($rosId > 0) {
+                    try { owpprov_ros($ctx->params, $rosId)->vpnRevoke($ctx->serviceId); } catch (\Throwable $e) {}
+                }
+                Ipam::release($ctx->serviceId);
+            },
+        ]),
+    ];
+    try {
+        Orchestrator::withLock(function () use ($ctx, $steps) {
+            FeatureStepRunner::create($ctx, $steps);
+            owpprov_writeback_customfields($ctx->params, (array) $ctx->get('alloc', []));
+            return null;
+        });
+        return 'success';
+    } catch (\Throwable $e) {
+        logModuleCall('owp_provision', 'owpprov_create_vpn_project', owpprov_safe_params($params), $e->getMessage(), $e->getTraceAsString());
+        return 'Error: L2TP VPN 项目开通失败：' . $e->getMessage();
+    }
+}
+
+// ============================================================================
+// 蓝图：服务器租赁 / 托管（Project dedicated_* / legacy serviceModel=server）
 // ============================================================================
 
 /**
@@ -546,23 +668,25 @@ function owp_provision_ChangePackage(array $params)
  *
  * @return string 'success' | 错误串
  */
-function owpprov_create_server(array $params)
+function owpprov_create_server(array $params, ?object $project = null)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     try {
         if ($serviceId <= 0) {
             return 'Error: 缺少 serviceid。';
         }
+        $project = $project ?: Projects::resolve($params);
         // 读参数
         $bandwidth    = owpprov_pluck_co($params, ['bandwidth', 'Bandwidth'], (string) ($params['configoption1'] ?? '100M'));
         $prefixSize   = owpprov_pluck_co($params, ['prefix_size', 'Prefix Size'], (string) ($params['configoption2'] ?? '/29'));
         $namingPrefix = (string) ($params['configoption3'] ?? 'WHMCS');
-        $line         = owpprov_pluck_co($params, ['line', 'Line', '线路'], '');
+        $line         = owpprov_project_line_name($project, $params);
         $serverSel    = owpprov_pluck_co($params, ['server', 'Server', '服务器'], '');
         $custTag      = Templates::custTag($namingPrefix, $serviceId, owpprov_client_name($params));
         $wantServerId = ctype_digit($serverSel) ? (int) $serverSel : 0;
         // P8：线路实体（若已建）。有则按线路落地交换机选机、用线路池组发 IP；无则回退旧 server.line 标签逻辑。
         $lineObj = $line !== '' ? Lines::byName($line) : null;
+        $ipv6Count = owpprov_requested_ipv6_count($params, $project, true);
         // VPN 凭据 = WHMCS 服务 username/password；Other 类产品常无 username → 自动生成并存回服务（幂等，客户可一次性查看）
         [$vpnUser, $vpnPass] = owpprov_ensure_service_credentials($params);
 
@@ -572,7 +696,7 @@ function owpprov_create_server(array $params)
             return 'Error: 带宽档无法换算 CIR：' . $e->getMessage();
         }
 
-        return Orchestrator::withLock(function () use ($params, $serviceId, $bandwidth, $prefixSize, $custTag, $line, $lineObj, $wantServerId, $vpnUser, $vpnPass) {
+        return Orchestrator::withLock(function () use ($params, $project, $serviceId, $bandwidth, $prefixSize, $custTag, $line, $lineObj, $wantServerId, $vpnUser, $vpnPass, $ipv6Count) {
             // 1) 绑定空闲服务器（原子）：有线路实体 → 按其落地交换机选机；否则回退按 server.line 标签。
             try {
                 $srv = $lineObj
@@ -591,14 +715,48 @@ function owpprov_create_server(array $params)
 
             // 2) 在该服务器的固定端口分配并发 IP（server 直连模型：vlan + Vlanif 当网关 + port access + qos lr，无 PTP/route）
             try {
-                $alloc = Ipam::allocateServer($serviceId, $deviceId, $custTag, $prefixSize, $bandwidth, $port, $lineObj ? (int) $lineObj->id : null);
+                $alloc = Ipam::allocateServer(
+                    $serviceId,
+                    $deviceId,
+                    $custTag,
+                    $prefixSize,
+                    $bandwidth,
+                    $port,
+                    $lineObj ? (int) $lineObj->id : null,
+                    Projects::bindingInt($project, 'ipv4_pool_group_id', 0) ?: null
+                );
             } catch (\Throwable $e) {
                 Orchestrator::log($serviceId, 'create_server', 'allocate', $deviceId, 'failed', '', $e->getMessage());
                 Servers::releaseByService($serviceId);
                 return 'Error: 资源分配失败：' . $e->getMessage();
             }
             $deviceId = (int) ($alloc['device_id'] ?? $deviceId);
+            owpprov_mark_allocation_project($serviceId, $project);
             Orchestrator::log($serviceId, 'create_server', 'allocate', $deviceId, 'ok', '', (string) ($alloc['prefix'] ?? ''));
+
+            // 2b) IPv6：dedicated 默认 1 x /64，可由 Configurable Option「IPv6 Prefixes」增加。
+            $ipv6Prefixes = [];
+            if (Projects::hasFeature($project, 'ipv6_prefix') && $ipv6Count > 0) {
+                try {
+                    $ipv6Prefixes = Ipam::ensureIpv6Prefixes(
+                        $serviceId,
+                        (string) ($project->project_key ?? ''),
+                        owpprov_allocation_id($serviceId),
+                        $lineObj ? (int) $lineObj->id : null,
+                        $deviceId,
+                        $ipv6Count,
+                        Projects::bindingInt($project, 'ipv6_pool_group_id', 0) ?: null,
+                        64
+                    );
+                    $alloc['ipv6_prefixes'] = json_encode($ipv6Prefixes, JSON_UNESCAPED_SLASHES);
+                    Orchestrator::log($serviceId, 'create_server', 'ipv6.reserve', $deviceId, 'ok', '', implode(', ', $ipv6Prefixes));
+                } catch (\Throwable $e) {
+                    Orchestrator::log($serviceId, 'create_server', 'ipv6.reserve', $deviceId, 'failed', '', $e->getMessage());
+                    Ipam::release($serviceId);
+                    Servers::releaseByService($serviceId);
+                    return 'Error: IPv6 前缀分配失败，已释放 IPv4 分配与服务器绑定：' . $e->getMessage();
+                }
+            }
 
             // 3) 交换机下发
             $drv = owpprov_vrp($params, $deviceId);
@@ -616,7 +774,7 @@ function owpprov_create_server(array $params)
             $rosId = (int) ($srv->vpn_device_id ?? 0);
             if ($rosId > 0 && !empty($srv->ipmi_ip) && $vpnUser !== '') {
                 try {
-                    $vpnIp = Ipam::pickOrReuseVpnIp($rosId, $serviceId); // 重跑复用已分配地址，避免泄漏/不一致
+                    $vpnIp = Ipam::pickOrReuseVpnIp($rosId, $serviceId, Projects::bindingInt($project, 'vpn_pool_group_id', 0) ?: null); // 重跑复用已分配地址，避免泄漏/不一致
                     owpprov_ros($params, $rosId)->vpnGrant($serviceId, $vpnIp, (string) $srv->ipmi_ip, $vpnUser, $vpnPass);
                     Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)->update([
                         'vpn_device_id' => $rosId,
@@ -719,6 +877,7 @@ function owp_provision_ClientArea(array $params)
         'vpnUser'      => '',
         'vpnIp'        => '',
         'vpnTarget'    => '',
+        'vpnProtocols' => '',
         'vpnRevealed'  => false,
         'vpnPass'      => '',
         // 服务器形态：连接信息补全（P1）
@@ -726,6 +885,7 @@ function owp_provision_ClientArea(array $params)
         'gateway'      => '',
         'usableRange'  => '',
         'netmask'      => '',
+        'ipv6Prefixes' => [],
         'vpnServer'    => '',
         'ipsecPsk'     => '',
         'idracUrl'     => '',
@@ -769,6 +929,7 @@ function owp_provision_ClientArea(array $params)
         $vars['loopback']     = (string) ($alloc['loopback_ip'] ?? '');
         $vars['tunnelId']     = (string) ($alloc['tunnel_id'] ?? '');
         $vars['remoteIp']     = (string) ($alloc['remote_ip'] ?? '');
+        $vars['ipv6Prefixes'] = Ipam::ipv6ForService($serviceId);
 
         // VPN（服务器形态）：一次性查看凭据
         $vars['vpnUser']     = (string) ($alloc['vpn_user'] ?? '');
@@ -776,6 +937,18 @@ function owp_provision_ClientArea(array $params)
         $vars['vpnTarget']   = (string) ($alloc['vpn_target'] ?? '');
         $vars['hasVpn']      = $vars['vpnUser'] !== '';
         $vars['vpnRevealed'] = (int) ($alloc['vpn_revealed'] ?? 0) === 1;
+        $project = !empty($alloc['project_key']) ? Projects::byKey((string) $alloc['project_key']) : null;
+        $protocols = $project ? Projects::protocols($project) : [];
+        $vars['vpnProtocols'] = $protocols ? strtoupper(implode(' / ', $protocols)) : 'L2TP / PPTP / SSTP / OpenVPN / IKEv2';
+        $rosId = (int) ($alloc['vpn_device_id'] ?? 0);
+        if ($rosId > 0) {
+            $rosDev = Devices::get($rosId);
+            if ($rosDev) {
+                $pub = trim((string) ($rosDev->ros_pub_host ?? ''));
+                $vars['vpnServer'] = $pub !== '' ? $pub : (string) ($rosDev->device_host ?? '');
+            }
+            $vars['ipsecPsk'] = Config::deviceSecret($rosId, 'ros_ipsec_psk');
+        }
         if ($vars['hasVpn'] && (($_POST['ipd_action'] ?? '') === 'reveal_vpn')) {
             if ($ipdOldToken === '' || !hash_equals($ipdOldToken, (string) ($_POST['ipd_token'] ?? ''))) {
                 $vars['error'] = '安全校验失败（token 失效），请刷新后重试。';
@@ -826,7 +999,9 @@ function owp_provision_ClientArea(array $params)
 
         // 非 GRE：只读展示（含上方 VPN 区），不提供改对端
         if (($alloc['delivery_type'] ?? '') !== 'gre') {
-            if (!$vars['hasVpn'] && $vars['message'] === '') {
+            if (($alloc['delivery_type'] ?? '') === 'vpn' && $vars['message'] === '') {
+                $vars['message'] = '本服务为独立 VPN 项目。';
+            } elseif (!$vars['hasVpn'] && $vars['message'] === '') {
                 $vars['message'] = '本服务为 XC 交付，无需在客户区改对端。';
             }
             return ['templatefile' => 'clientarea', 'templateVariables' => $vars];
@@ -882,7 +1057,7 @@ function owp_provision_ClientArea(array $params)
             Ipam::updateRemoteIp($serviceId, $newRemote);
             owpprov_set_customfield($params, 'Remote Endpoint IP', $newRemote);
             if (function_exists('logActivity')) {
-                logActivity('[IPDelivery] 服务 #' . $serviceId . ' 客户区改 GRE 对端：'
+                logActivity('[OWPProvision] 服务 #' . $serviceId . ' 客户区改 GRE 对端：'
                     . $vars['remoteIp'] . ' → ' . $newRemote . '。', (int) ($params['userid'] ?? 0));
             }
             $vars['remoteIp'] = $newRemote;
@@ -1050,6 +1225,109 @@ function owp_provision_VerifyDelivery(array $params)
 // 内部帮手（前缀 ipd_，避免与 WHMCS/其它模块冲突）
 // ============================================================================
 
+function owpprov_terminate_vpn_project(array $params, array $alloc): string
+{
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    return Orchestrator::withLock(function () use ($params, $serviceId, $alloc) {
+        $rosId = (int) ($alloc['vpn_device_id'] ?? 0);
+        if ($rosId > 0) {
+            try {
+                $res = owpprov_ros($params, $rosId)->vpnRevoke($serviceId);
+                Orchestrator::log($serviceId, 'terminate_vpn', 'ros.vpn_revoke', $rosId, !empty($res['dryRun']) ? 'dryrun' : 'ok', '', 'standalone VPN revoked');
+            } catch (\Throwable $e) {
+                Orchestrator::log($serviceId, 'terminate_vpn', 'ros.vpn_revoke', $rosId, 'failed', '', $e->getMessage());
+                return 'Error: VPN 拆除失败（资源未回池）：' . $e->getMessage();
+            }
+        }
+        Ipam::release($serviceId);
+        Orchestrator::log($serviceId, 'terminate_vpn', 'release', $rosId ?: null, 'ok', '', 'VPN allocation released');
+        return 'success';
+    });
+}
+
+function owpprov_project_line_name(?object $project, array $params): string
+{
+    $line = trim(owpprov_pluck_co($params, ['line', 'Line', '线路'], ''));
+    if ($line !== '') {
+        return $line;
+    }
+    $boundLine = trim((string) Projects::binding($project, 'line_name', ''));
+    if ($boundLine !== '') {
+        return $boundLine;
+    }
+    $lineId = Projects::bindingInt($project, 'line_id', 0);
+    if ($lineId > 0) {
+        $obj = Lines::get($lineId);
+        if ($obj) {
+            return (string) $obj->name;
+        }
+    }
+    return '';
+}
+
+function owpprov_requested_ipv6_count(array $params, ?object $project, bool $dedicatedDefault): int
+{
+    $raw = trim(owpprov_pluck_co($params, ['IPv6 Prefixes', 'ipv6_prefixes', 'IPv6 prefixes'], ''));
+    if ($raw === '') {
+        $raw = trim(owpprov_pluck_cf($params, ['IPv6 Prefixes', 'IPv6 prefixes'], ''));
+    }
+    if ($raw !== '') {
+        if (preg_match('/(\d+)/', $raw, $m)) {
+            return max(0, min(64, (int) $m[1]));
+        }
+        return 0;
+    }
+    $def = Projects::bindingInt($project, 'ipv6_prefix_default', $dedicatedDefault ? 1 : 0);
+    return max(0, min(64, $def));
+}
+
+function owpprov_project_vpn_device_id(?object $project): int
+{
+    foreach (['vpn_device_id', 'device_id'] as $key) {
+        $id = Projects::bindingInt($project, $key, 0);
+        if ($id > 0 && Devices::exists($id)) {
+            return $id;
+        }
+    }
+    $found = 0;
+    foreach (Devices::enabled() as $d) {
+        if ((string) ($d->driver ?? '') !== 'ros') {
+            continue;
+        }
+        if ($found > 0) {
+            return 0; // ambiguous
+        }
+        $found = (int) $d->id;
+    }
+    return $found;
+}
+
+function owpprov_allocation_id(int $serviceId): ?int
+{
+    try {
+        $id = (int) Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)->value('id');
+        return $id > 0 ? $id : null;
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+function owpprov_mark_allocation_project(int $serviceId, ?object $project): void
+{
+    if (!$project) {
+        return;
+    }
+    try {
+        $updates = [
+            'project_key' => (string) ($project->project_key ?? ''),
+            'features' => json_encode(Projects::features($project), JSON_UNESCAPED_SLASHES),
+            'updated_at' => date('Y-m-d H:i:s'),
+        ];
+        Capsule::table(Schema::T_ALLOCATIONS)->where('serviceid', $serviceId)->update($updates);
+    } catch (\Throwable $e) {
+    }
+}
+
 /**
  * 构造该设备的 VrpDriver（华为 VRP 交换机驱动；内部按 device_id 取连接配置+凭据建 Connection）。
  * dry-run 综合：addon 全局 或 该产品 ConfigOptions。设备不存在/未配置时 VrpDriver 构造抛异常。
@@ -1213,6 +1491,19 @@ function owpprov_writeback_customfields(array $params, array $alloc): void
         owpprov_set_customfield($params, 'Allocated VLAN', (string) ($alloc['vlan_id'] ?? ''));
         owpprov_set_customfield($params, 'PTP', trim(((string) ($alloc['ptp_our'] ?? '')) . ' / ' . ((string) ($alloc['ptp_peer'] ?? '')), ' /'));
         owpprov_set_customfield($params, 'Delivered Prefix', (string) ($alloc['prefix'] ?? ''));
+        $ipv6 = [];
+        if (!empty($alloc['ipv6_prefixes'])) {
+            $decoded = json_decode((string) $alloc['ipv6_prefixes'], true);
+            if (is_array($decoded)) {
+                $ipv6 = array_values(array_filter(array_map('strval', $decoded)));
+            }
+        }
+        if (empty($ipv6) && !empty($params['serviceid'])) {
+            $ipv6 = Ipam::ipv6ForService((int) $params['serviceid']);
+        }
+        if (!empty($ipv6)) {
+            owpprov_set_customfield($params, 'IPv6 Prefixes', implode("\n", $ipv6));
+        }
         $tun = '';
         if (($alloc['delivery_type'] ?? '') === 'gre') {
             $tun = 'Tunnel' . ($alloc['tunnel_id'] ?? '') . ' / Loop ' . ($alloc['loopback_ip'] ?? '');

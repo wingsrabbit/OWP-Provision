@@ -1,6 +1,6 @@
 <?php
 /**
- * IP-Delivery — Schema.php
+ * OWP Provision — Schema.php
  * ----------------------------------------------------------------------------
  * 建表 / 迁移（idempotent）。被 addon `_activate()` 调用，server 模块在每次
  * 生命周期函数入口也可调用 ensureTables() 兜底（防止只装了 server 没 Activate addon）。
@@ -24,8 +24,8 @@ if (!defined('WHMCS')) {
 
 class Schema
 {
-    /** 当前 schema 版本；addon `_upgrade()` 按此迁移。v2.8.0 新增 jobs/lines/pool_groups/pool_blocks（ensureTables 幂等建）。 */
-    public const VERSION = '2.8.0';
+    /** 当前 schema 版本；v3.0.0 新增 Projects/Blueprints + IPv6 allocation 表。 */
+    public const VERSION = '3.0.0';
 
     public const T_POOLS       = 'mod_owp_provision_pools';       // 已弃用（迁移源/回滚保留）
     public const T_RESOURCES   = 'mod_owp_provision_resources';   // 清单式 IPAM：逐条具体资源
@@ -39,6 +39,8 @@ class Schema
     public const T_POOL_GROUPS = 'mod_owp_provision_pool_groups'; // v2.8 IPAM 池组（purpose/line/device/范围）
     public const T_POOL_BLOCKS = 'mod_owp_provision_pool_blocks'; // v2.8 池组里的原始母段（不预切）
     public const T_LINES       = 'mod_owp_provision_lines';       // v2.8 线路实体（P8）
+    public const T_PROJECTS    = 'mod_owp_provision_projects';    // v3 Project / Blueprint
+    public const T_IPV6_ALLOC  = 'mod_owp_provision_ipv6_allocations'; // v3 多 /64 分配
 
     /**
      * 幂等建全部表。返回简单结果数组，便于 addon `_activate()` 直接转成 WHMCS 期望格式。
@@ -60,15 +62,19 @@ class Schema
             self::createLines();
             self::createPoolGroups();
             self::createPoolBlocks();
+            self::createProjects();
+            self::createIpv6Allocations();
+            self::postCreateMigrations();
+            self::seedDefaultProjects();
 
             return [
                 'status'      => 'success',
-                'description' => 'OWP Provision：12 张表已就绪（含 v2.8 jobs/lines/pool_groups/pool_blocks）。',
+                'description' => 'OWP Provision：Projects/Blueprints、IPv6 allocations 与既有表已就绪。',
             ];
         } catch (\Throwable $e) {
             return [
                 'status'      => 'error',
-                'description' => 'IP-Delivery 建表失败：' . $e->getMessage(),
+                'description' => 'OWP Provision 建表失败：' . $e->getMessage(),
             ];
         }
     }
@@ -90,7 +96,33 @@ class Schema
         self::createLines();
         self::createPoolGroups();
         self::createPoolBlocks();
+        self::createProjects();
+        self::createIpv6Allocations();
+        self::postCreateMigrations();
         self::autoSeedResources(); // 安全网：升级后即使 _upgrade 未触发，也保证 resources 已从 pools 播种一次
+        self::seedDefaultProjects();
+    }
+
+    /** createX 见表即 return；这里幂等补 v3 列。 */
+    private static function postCreateMigrations(): void
+    {
+        foreach ([
+            'project_key' => function ($t) { $t->string('project_key', 64)->nullable()->after('serviceid'); },
+            'features' => function ($t) { $t->text('features')->nullable()->after('delivery_type'); },
+            'ipv6_prefixes' => function ($t) { $t->text('ipv6_prefixes')->nullable()->after('prefix'); },
+        ] as $col => $cb) {
+            self::addColumn(self::T_ALLOCATIONS, $col, $cb);
+        }
+    }
+
+    private static function seedDefaultProjects(): void
+    {
+        try {
+            if (class_exists('\\OwpProvision\\Projects')) {
+                Projects::seedDefaults();
+            }
+        } catch (\Throwable $e) {
+        }
     }
 
     /**
@@ -197,13 +229,16 @@ class Schema
         Capsule::schema()->create(self::T_ALLOCATIONS, function ($t) {
             $t->increments('id');
             $t->unsignedInteger('serviceid')->comment('tblhosting.id');
+            $t->string('project_key', 64)->nullable()->comment('v3 Project/Blueprint key');
             $t->unsignedInteger('device_id')->default(1)->comment('所属设备 mod_owp_provision_devices.id');
-            $t->string('delivery_type', 8)->comment('xc|gre');
+            $t->string('delivery_type', 8)->comment('server|xc|gre|vpn');
+            $t->text('features')->nullable()->comment('v3 enabled feature keys JSON snapshot');
             $t->unsignedInteger('vlan_id')->nullable()->comment('XC 用');
             $t->string('ptp_net', 32)->nullable()->comment('PTP /30，如 100.64.0.8/30');
             $t->string('ptp_our', 32)->nullable()->comment('我方地址（.X+1）');
             $t->string('ptp_peer', 32)->nullable()->comment('客户侧（.X+2）');
             $t->string('prefix', 48)->nullable()->comment('交付段，如 203.0.113.240/28');
+            $t->text('ipv6_prefixes')->nullable()->comment('v3 IPv6 prefixes JSON/list, detail rows in ipv6_allocations');
             $t->string('port', 48)->nullable()->comment('XC 物理口');
             $t->unsignedInteger('tunnel_id')->nullable()->comment('GRE Tunnel/LoopBack 号（共用同号）');
             $t->string('loopback_ip', 32)->nullable()->comment('GRE 源 /32');
@@ -224,6 +259,7 @@ class Schema
             $t->timestamp('created_at')->nullable();
             $t->timestamp('updated_at')->nullable();
             $t->unique('serviceid');
+            $t->index('project_key');
             $t->index('status');
             $t->engine = 'InnoDB';
         });
@@ -445,6 +481,53 @@ class Schema
         });
     }
 
+    /** v3 Project / Blueprint registry. */
+    public static function createProjects(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_PROJECTS)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_PROJECTS, function ($t) {
+            $t->increments('id');
+            $t->string('project_key', 64)->unique()->comment('stable key, e.g. dedicated_hkbgp');
+            $t->string('name', 128);
+            $t->string('service_model', 24)->default('ip_transit')->comment('server|ip_transit|vpn');
+            $t->string('default_delivery_type', 16)->nullable()->comment('server|xc|gre|vpn');
+            $t->text('features')->nullable()->comment('JSON array of enabled feature keys');
+            $t->text('bindings')->nullable()->comment('JSON: line/device/pool/vpn/server bindings');
+            $t->tinyInteger('enabled')->default(1);
+            $t->text('notes')->nullable();
+            $t->timestamp('created_at')->nullable();
+            $t->timestamp('updated_at')->nullable();
+            $t->index('service_model');
+            $t->engine = 'InnoDB';
+        });
+    }
+
+    /** v3 IPv6 prefixes: multiple /64 rows can belong to one WHMCS service. */
+    public static function createIpv6Allocations(): void
+    {
+        if (Capsule::schema()->hasTable(self::T_IPV6_ALLOC)) {
+            return;
+        }
+        Capsule::schema()->create(self::T_IPV6_ALLOC, function ($t) {
+            $t->increments('id');
+            $t->unsignedInteger('serviceid')->comment('tblhosting.id');
+            $t->unsignedInteger('allocation_id')->nullable()->comment('IPv4 allocation row, if any');
+            $t->string('project_key', 64)->nullable();
+            $t->unsignedInteger('line_id')->nullable();
+            $t->unsignedInteger('group_id')->nullable()->comment('pool group used for this prefix');
+            $t->string('cidr', 64)->comment('IPv6 prefix, normally /64');
+            $t->string('status', 16)->default('active')->comment('active|suspended|terminated');
+            $t->timestamp('created_at')->nullable();
+            $t->timestamp('updated_at')->nullable();
+            $t->index('serviceid');
+            $t->index('project_key');
+            $t->index('status');
+            $t->engine = 'InnoDB';
+        });
+    }
+
     /**
      * 按版本迁移。1.0.0 为初始版本，暂无迁移步骤；后续在此 switch。
      *
@@ -499,6 +582,14 @@ class Schema
         // 2.6.0：客户区展示 ROS VPN 公网地址——devices 加 ros_pub_host（可填域名/白标，空回退 device_host）。
         if (version_compare($fromVersion, '2.6.0', '<')) {
             self::addColumn(self::T_DEVICES, 'ros_pub_host', function ($t) { $t->string('ros_pub_host', 128)->nullable(); });
+        }
+
+        // 3.0.0：Projects/Blueprints + IPv6 多前缀。
+        if (version_compare($fromVersion, '3.0.0', '<')) {
+            self::postCreateMigrations();
+            self::createProjects();
+            self::createIpv6Allocations();
+            self::seedDefaultProjects();
         }
     }
 

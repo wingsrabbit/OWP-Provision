@@ -242,8 +242,8 @@ class RosDriver implements DriverInterface
         if ($lan === '' || $wan === '' || $loc === '') {
             throw new \RuntimeException('ROS 站点字段未配置（请在设备页填 ros_lan_if / ros_wan_if / ros_l2tp_local）。');
         }
-        if ($custVpnIp === '' || $ipmiTarget === '' || $username === '') {
-            throw new \RuntimeException('VPN 授权缺参数（vpnIp/ipmiTarget/username）。');
+        if ($custVpnIp === '' || $username === '') {
+            throw new \RuntimeException('VPN 授权缺参数（vpnIp/username）。');
         }
         $tag = self::tag($serviceId);
 
@@ -256,9 +256,13 @@ class RosDriver implements DriverInterface
                 . ' remote-address=' . $custVpnIp . ' only-one=yes change-tcp-mss=yes',
             '/ppp secret add name=' . self::q($username) . ' password=' . self::q($password)
                 . ' service=any profile=' . self::q($tag) . ' comment=' . self::q($tag),
-            // 3) 隔离 filter（顺序：先放行，后兜底 drop）
-            '/ip firewall filter add chain=forward action=accept src-address=' . $custVpnIp
-                . ' dst-address=' . $ipmiTarget . ' out-interface=' . $lan . ' comment=' . self::q($tag),
+        ];
+        // 3) 隔离 filter（顺序：先放行，后兜底 drop）。Standalone L2TP 没有 IPMI target 时只放行公网。
+        if (trim($ipmiTarget) !== '') {
+            $cmds[] = '/ip firewall filter add chain=forward action=accept src-address=' . $custVpnIp
+                . ' dst-address=' . $ipmiTarget . ' out-interface=' . $lan . ' comment=' . self::q($tag);
+        }
+        $cmds = array_merge($cmds, [
             '/ip firewall filter add chain=forward action=accept src-address=' . $custVpnIp
                 . ' out-interface=' . $wan . ' comment=' . self::q($tag),
             '/ip firewall filter add chain=forward action=drop src-address=' . $custVpnIp . ' comment=' . self::q($tag),
@@ -266,7 +270,7 @@ class RosDriver implements DriverInterface
             // 4) 公网出 NAT
             '/ip firewall nat add chain=srcnat action=masquerade src-address=' . $custVpnIp
                 . ' out-interface=' . $wan . ' comment=' . self::q($tag),
-        ];
+        ]);
 
         // 5) IKEv2（可选；需设备预置全局 peer）。per-user mode-config pin 地址 + identity（EAP）。
         $peer = $this->ikev2Peer();

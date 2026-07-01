@@ -5,6 +5,30 @@
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-07-01
+
+### 新增
+- **Project / Blueprint 上层模型**：新增 `mod_owp_provision_projects`，默认 seed `dedicated_hkbgp`、`dedicated_hkbgp_cn`、`ip_transit_xc`、`ip_transit_gre`、`vpn_l2tp`。WHMCS 产品可通过 module `configoption6` 或 configurable option `Project Key` 绑定项目；未绑定时继续由旧 `serviceModel + delivery_type + line` 自动推导。
+- **Feature / Step 扩展点**：新增 `lib/FeatureSteps.php`，每个 feature step 具备 `validate / reserve / apply / verify / rollback / terminate` 生命周期；首批把 IP Transit、Dedicated Server、Standalone L2TP VPN 拆成项目入口，保留全局锁、oplog、失败回滚与 dry-run 行为。
+- **Dedicated IPv6 /64 分配**：新增 `mod_owp_provision_ipv6_allocations` 与 `purpose=ipv6` 池组支持。Dedicated 默认分配 1 个 `/64`，可读取 `IPv6 Prefixes` configurable option / custom field 分配多个 `/64`，Terminate/Suspend/Unsuspend 会同步 IPv6 分配状态并释放。
+- **Standalone VPN 项目**：`vpn_l2tp` 成为独立 Project，不再只能作为 dedicated server 附属能力。RouterOS `ppp secret service=any` 兼容现有 L2TP/PPTP/SSTP/OpenVPN 行为，项目配置里保留 OpenVPN/IKEv2 协议扩展点。
+- **Admin Projects / Blueprints UI**：addon 新增 Projects / Blueprints 区域，可新增/编辑项目、启停 features、绑定 line/device/pool/server/vpn pool；底层 Devices、Lines/Pools、Servers、Resources、Allocations 入口保留。
+
+### 兼容 / 迁移
+- 现有 `serviceModel=server`、`serviceModel=ip_transit`、`delivery_type=xc/gre` 产品不需要立即修改；没有 `project_key` 时自动推导到对应默认项目。
+- Dedicated HKBGP-CN 统一使用 `HKBGP-CN`，默认项目配置不再使用 `HKBGP-PRO` 作为当前线路名；旧资源池 / line / pool id 不删除、不重建。
+- Schema migration 幂等补列 `allocations.project_key/features/ipv6_prefixes`，并自动创建 projects 与 IPv6 allocations 表。访问 WHMCS addon 或 server module 时由 `ensureTables()` 触发。
+
+### 验证
+- 新增 `tests/project_blueprint_dryrun.php`，覆盖旧模型推导、新 `project_key`、默认 feature、`IPv6 Prefixes` 单个/多个 `/64` 解析与默认配置不含 `HKBGP-PRO`。
+
+## [2.8.1] - 2026-06-29
+
+### 修复 / 改进
+- **池组作用域修正**：无线路上下文的 GRE/XC 交付只匹配设备级通用 delivery 池组（`line_id IS NULL`），服务器产品继续按线路实体匹配线路专属池组，避免 GRE/XC 误用 `HKBGP-STD/HKBGP-PRO` 服务器线路池。
+- **VPN 池组分配修正**：purpose=vpn 的 /32 分配改按 `allocations.vpn_ip` 实时扣减，并保留每个传统网段的网络地址/广播地址；返回给 RouterOS 的客户地址保持裸 IPv4，与 `setupVpnPool()` 下发到 RouterOS 的可用范围保持一致。
+- **正式命名**：WHMCS addon/server module 可见名统一为 `OWP Provision`。
+
 ## [2.8.0] - 2026-06-24
 
 完整闭环真机测试（v2.7.0）通过后与用户对齐的优化集合 **P1–P11**：开通异步化、身份/IP 后台可配、设备/资源角色化、IPAM 池组重做。新增表 `jobs/lines/pool_groups/pool_blocks`（经 `ensureTables` 幂等创建）。新模型对旧装机**向后兼容**：IPAM 优先池组、无配置回退旧 Resources+carve；线路实体存在才走线路驱动、否则回退 `server.line`；vpn_ip 优先池组、否则回退旧 vpn_ip 资源。
